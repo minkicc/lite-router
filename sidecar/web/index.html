@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lite Router</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --text: #1f2430;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --accent: #2563eb;
+      --good: #16a34a;
+      --bad: #dc2626;
+      --warn: #d97706;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    header { background: var(--card); border-bottom: 1px solid var(--line); padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    h1 { font-size: 18px; margin: 0; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    button { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    main { max-width: 1180px; margin: 24px auto; padding: 0 24px 48px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 20px; }
+    .card h2 { margin: 0 0 14px; font-size: 15px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+    code { background: #eef2f7; border-radius: 5px; padding: 2px 5px; font-size: 12px; }
+    .pill { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 600; }
+    .healthy { background: #dcfce7; color: var(--good); }
+    .unhealthy { background: #fee2e2; color: var(--bad); }
+    .unknown { background: #fef3c7; color: var(--warn); }
+    .disabled { background: #e5e7eb; color: var(--muted); }
+    textarea { width: 100%; min-height: 320px; border: 1px solid var(--line); border-radius: 8px; padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize: vertical; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .muted { color: var(--muted); }
+    .flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .spacer { flex: 1; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Lite Router</h1>
+    <div class="actions">
+      <button id="check-all">立即检测全部</button>
+      <button id="reload">重新加载配置</button>
+      <button id="save-config">保存配置</button>
+    </div>
+  </header>
+  <main>
+    <div class="grid">
+      <div class="card">
+        <h2>渠道</h2>
+        <p class="muted" id="summary">加载中...</p>
+      </div>
+      <div class="card">
+        <h2>监听地址</h2>
+        <p><code id="listen-addr">-</code></p>
+        <p class="muted">Codex 的 Base URL 填：<code id="base-url">-</code></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>渠道状态</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>状态</th>
+              <th>名称</th>
+              <th>Base URL</th>
+              <th>优先级</th>
+              <th>分组 / 分组优先级</th>
+              <th>价格</th>
+              <th>响应时间</th>
+              <th>模型</th>
+              <th>Key</th>
+              <th>最近错误</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="channels"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>模型映射</h2>
+        <div id="mappings" class="muted">无</div>
+      </div>
+      <div class="card">
+        <h2>兜底模型</h2>
+        <div id="fallbacks" class="muted">无</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>配置</h2>
+      <p class="muted">编辑完整 JSON，保存后立即生效并写回配置文件。</p>
+      <textarea id="config-editor" spellcheck="false"></textarea>
+      <div class="flex" style="margin-top:10px">
+        <span class="spacer"></span>
+        <button id="load-config">重新读取</button>
+        <button id="save-config-2">保存配置</button>
+      </div>
+      <p class="muted" id="config-message"></p>
+    </div>
+  </main>
+
+  <script>
+    const stateEl = { summary: document.getElementById('summary'), listenAddr: document.getElementById('listen-addr'), baseUrl: document.getElementById('base-url'), channels: document.getElementById('channels'), mappings: document.getElementById('mappings'), fallbacks: document.getElementById('fallbacks') };
+    const editor = document.getElementById('config-editor');
+    const configMessage = document.getElementById('config-message');
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    function statusPill(status) {
+      const cls = status || 'unknown';
+      return `<span class="pill ${cls}">${esc(status || 'unknown')}</span>`;
+    }
+
+    async function refreshState() {
+      const res = await fetch('/api/state');
+      const data = await res.json();
+      const channels = data.channels || [];
+      const healthy = channels.filter(c => c.status === 'healthy').length;
+      const unhealthy = channels.filter(c => c.status === 'unhealthy').length;
+      const unknown = channels.filter(c => c.status === 'unknown').length;
+      stateEl.summary.textContent = `共 ${channels.length} 个渠道：${healthy} 个正常，${unhealthy} 个异常，${unknown} 个未知。`;
+      stateEl.listenAddr.textContent = data.listen_addr || '-';
+      const port = (data.listen_addr || ':8787').split(':').pop() || '8787';
+      stateEl.baseUrl.textContent = `http://127.0.0.1:${port}/v1`;
+
+      stateEl.channels.innerHTML = channels.map(ch => {
+        const group = [ch.group || 'default', `优先级 ${ch.group_priority ?? 0}`].join(' / ');
+        return `<tr>
+          <td>${statusPill(ch.status)}</td>
+          <td>${esc(ch.name || ch.id)}</td>
+          <td><code>${esc(ch.base_url)}</code></td>
+          <td>${ch.priority ?? 0}</td>
+          <td>${esc(group)}</td>
+          <td>${ch.price ?? 0}</td>
+          <td>${ch.response_time_ms ? ch.response_time_ms + ' ms' : '-'}</td>
+          <td>${esc((ch.models || []).join(', '))}</td>
+          <td>${ch.api_key_set ? '已设置' : '未设置'}</td>
+          <td class="muted">${esc(ch.last_error || '-')}</td>
+          <td><button data-id="${esc(ch.id)}" class="check-one">检测</button></td>
+        </tr>`;
+      }).join('');
+
+      document.querySelectorAll('.check-one').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          await fetch(`/api/check/${encodeURIComponent(btn.dataset.id)}`, { method: 'POST' });
+          setTimeout(refreshState, 700);
+        });
+      });
+
+      const mappings = data.model_mappings || [];
+      stateEl.mappings.innerHTML = mappings.length
+        ? mappings.map(m => `<div><code>${esc(m.platform_model)}</code> → <code>${esc(m.upstream_model)}</code>${m.channel_id ? ` (${esc(m.channel_id)})` : ''}</div>`).join('')
+        : '无';
+
+      const fallbacks = data.fallback_models || {};
+      const fallbackText = Object.entries(fallbacks).map(([k, v]) => `<div><code>${esc(k)}</code> → <code>${esc(v)}</code></div>`).join('');
+      stateEl.fallbacks.innerHTML = fallbackText || '无';
+    }
+
+    async function refreshConfig() {
+      const res = await fetch('/api/config');
+      const data = await res.json();
+      editor.value = JSON.stringify(data, null, 2);
+    }
+
+    async function saveConfig() {
+      try {
+        const cfg = JSON.parse(editor.value);
+        const res = await fetch('/api/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cfg)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        configMessage.textContent = '已保存';
+        configMessage.style.color = 'var(--good)';
+        refreshState();
+      } catch (err) {
+        configMessage.textContent = '保存失败：' + err.message;
+        configMessage.style.color = 'var(--bad)';
+      }
+    }
+
+    document.getElementById('check-all').addEventListener('click', async () => {
+      await fetch('/api/check', { method: 'POST' });
+      setTimeout(refreshState, 700);
+    });
+    document.getElementById('reload').addEventListener('click', async () => {
+      await fetch('/api/reload', { method: 'POST' });
+      refreshConfig();
+      refreshState();
+    });
+    document.getElementById('save-config').addEventListener('click', saveConfig);
+    document.getElementById('save-config-2').addEventListener('click', saveConfig);
+    document.getElementById('load-config').addEventListener('click', refreshConfig);
+
+    refreshConfig();
+    refreshState();
+    setInterval(refreshState, 5000);
+  </script>
+</body>
+</html>

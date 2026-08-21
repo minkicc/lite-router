@@ -1,0 +1,16 @@
+{
+  "name": "lite-router",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "sidecar:build": "node scripts/build-sidecar.mjs",
+    "portable:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-portable.ps1",
+    "dev": "npm run sidecar:build && tauri dev",
+    "build": "npm run sidecar:build && tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
