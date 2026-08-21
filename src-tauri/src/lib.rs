@@ -4,6 +4,9 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+const LEGACY_APP_IDENTIFIER: &str = "com.literouter.desktop";
+const DATA_FILES: [&str; 2] = ["config.json", "usage.json"];
+
 struct RouterState {
     child: Mutex<Option<CommandChild>>,
 }
@@ -16,8 +19,41 @@ struct RouterStatus {
 
 fn router_config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    migrate_legacy_data(&dir)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("config.json"))
+}
+
+fn migrate_legacy_data(new_dir: &std::path::Path) -> Result<(), String> {
+    let Some(parent) = new_dir.parent() else {
+        return Ok(());
+    };
+    let old_dir = parent.join(LEGACY_APP_IDENTIFIER);
+    if !old_dir.is_dir() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(new_dir).map_err(|e| e.to_string())?;
+    for name in DATA_FILES {
+        let source = old_dir.join(name);
+        let destination = new_dir.join(name);
+        if !source.is_file() || destination.exists() {
+            continue;
+        }
+        if std::fs::rename(&source, &destination).is_err() {
+            std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
+            std::fs::remove_file(&source).map_err(|e| e.to_string())?;
+        }
+    }
+
+    if std::fs::read_dir(&old_dir)
+        .map_err(|e| e.to_string())?
+        .next()
+        .is_none()
+    {
+        std::fs::remove_dir(old_dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn spawn_router(app: &AppHandle) -> Result<CommandChild, String> {
@@ -157,4 +193,45 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_config_root() -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("lite-router-migration-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn migrates_legacy_data_without_overwriting_new_files() {
+        let root = temp_config_root();
+        let old_dir = root.join(LEGACY_APP_IDENTIFIER);
+        let new_dir = root.join("cc.minki.literouter");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::write(old_dir.join("config.json"), "old config").unwrap();
+        std::fs::write(old_dir.join("usage.json"), "old usage").unwrap();
+        std::fs::write(new_dir.join("config.json"), "new config").unwrap();
+
+        migrate_legacy_data(&new_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(new_dir.join("config.json")).unwrap(),
+            "new config"
+        );
+        assert_eq!(
+            std::fs::read_to_string(new_dir.join("usage.json")).unwrap(),
+            "old usage"
+        );
+        assert!(old_dir.join("config.json").exists());
+        assert!(!old_dir.join("usage.json").exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
