@@ -274,8 +274,8 @@ tr:last-child td { border-bottom: 0; }
   margin-bottom: 14px;
 }
 .stat { min-height: 72px; padding: 12px 13px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
-.stat span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
-.stat strong { font-size: 19px; font-weight: 680; }
+.stat > span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
+.stat strong { display: block; color: var(--text); font-size: 19px; font-weight: 680; }
 
 .modal-overlay {
   position: fixed;
