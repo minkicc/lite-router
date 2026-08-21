@@ -122,14 +122,7 @@ func Default() *Config {
 
 func DefaultPath() string {
 	if dir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(dir) != "" {
-		current := filepath.Join(dir, "lite-router", "config.json")
-		legacy := filepath.Join(dir, "local-router", "config.json")
-		if _, err := os.Stat(current); errors.Is(err, os.ErrNotExist) {
-			if _, legacyErr := os.Stat(legacy); legacyErr == nil {
-				return legacy
-			}
-		}
-		return current
+		return filepath.Join(dir, "lite-router", "config.json")
 	}
 	return "lite-router.json"
 }

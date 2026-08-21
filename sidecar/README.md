@@ -33,5 +33,3 @@ Lite Router 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康�
 - `LITE_ROUTER_CONFIG_PATH`：配置文件路径
 - `LITE_ROUTER_NO_BROWSER`：设为 `1` 时不自动打开管理页
 - `LITE_ROUTER_LISTEN_ADDR`：覆盖监听地址
-
-旧的 `LOCAL_ROUTER_*` 环境变量仍可兼容使用。

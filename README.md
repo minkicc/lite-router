@@ -103,10 +103,10 @@ npm run sidecar:build -- aarch64-apple-darwin
 
 ## 数据与安全
 
-桌面应用的数据保存在系统应用配置目录中。为了兼容旧版本，应用标识仍为 `com.localrouter.desktop`；Windows 下通常位于：
+桌面应用的数据保存在系统应用配置目录中。应用标识为 `com.literouter.desktop`；Windows 下通常位于：
 
 ```text
-%APPDATA%\com.localrouter.desktop\
+%APPDATA%\com.literouter.desktop\
 ```
 
 `config.json` 包含渠道 API Key 和本地访问 Token，`usage.json` 包含本地使用记录。不要将这些文件提交到 Git 仓库或发送给他人。

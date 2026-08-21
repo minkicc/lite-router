@@ -25,9 +25,9 @@ import (
 var webFS embed.FS
 
 func main() {
-	cfgPath := flag.String("config", envWithLegacyFallback("LITE_ROUTER_CONFIG_PATH", "LOCAL_ROUTER_CONFIG_PATH"), "path to config.json")
-	noBrowser := flag.Bool("no-browser", envWithLegacyFallback("LITE_ROUTER_NO_BROWSER", "LOCAL_ROUTER_NO_BROWSER") == "1", "do not open the admin page in a browser")
-	listenAddr := flag.String("listen", envWithLegacyFallback("LITE_ROUTER_LISTEN_ADDR", "LOCAL_ROUTER_LISTEN_ADDR"), "override listen address")
+	cfgPath := flag.String("config", os.Getenv("LITE_ROUTER_CONFIG_PATH"), "path to config.json")
+	noBrowser := flag.Bool("no-browser", os.Getenv("LITE_ROUTER_NO_BROWSER") == "1", "do not open the admin page in a browser")
+	listenAddr := flag.String("listen", os.Getenv("LITE_ROUTER_LISTEN_ADDR"), "override listen address")
 	flag.Parse()
 
 	if strings.TrimSpace(*cfgPath) == "" {
@@ -90,13 +90,6 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = httpServer.Shutdown(shutdownCtx)
-}
-
-func envWithLegacyFallback(name, legacyName string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return os.Getenv(legacyName)
 }
 
 func displayAddr(addr string) string {
