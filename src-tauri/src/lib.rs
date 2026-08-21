@@ -24,12 +24,12 @@ fn spawn_router(app: &AppHandle) -> Result<CommandChild, String> {
     let config_path = router_config_path(app)?;
     let config_arg = config_path.to_string_lossy().to_string();
 
-    let sidecar = app
+    let backend_command = app
         .shell()
         .sidecar("lite-router")
         .map_err(|e| e.to_string())?;
 
-    let (mut rx, child) = sidecar
+    let (mut rx, child) = backend_command
         .args([
             "--config".to_string(),
             config_arg,

@@ -6,5 +6,5 @@
 # will have schema files for capabilities auto-completion
 /gen/schemas
 
-# Sidecar binaries are built by scripts/build-sidecar.mjs
+# Backend binaries are built by scripts/build-backend.mjs
 /binaries/

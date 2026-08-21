@@ -16,12 +16,12 @@ $releaseDir = if (Test-Path -LiteralPath (Join-Path $targetRelease "lite-router-
 }
 
 $desktopExe = Join-Path $releaseDir "lite-router-desktop.exe"
-$sidecarExe = Join-Path $root "src-tauri\binaries\lite-router-$TargetTriple.exe"
+$backendExe = Join-Path $root "src-tauri\binaries\lite-router-$TargetTriple.exe"
 if (-not (Test-Path -LiteralPath $desktopExe)) {
     throw "Desktop executable not found: $desktopExe"
 }
-if (-not (Test-Path -LiteralPath $sidecarExe)) {
-    throw "Sidecar executable not found: $sidecarExe"
+if (-not (Test-Path -LiteralPath $backendExe)) {
+    throw "Backend executable not found: $backendExe"
 }
 
 $bundleDir = Join-Path $releaseDir "bundle\portable"
@@ -33,7 +33,7 @@ $stageDir = Join-Path $stageRoot "Lite Router"
 try {
     New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
     Copy-Item -LiteralPath $desktopExe -Destination (Join-Path $stageDir "Lite Router.exe")
-    Copy-Item -LiteralPath $sidecarExe -Destination (Join-Path $stageDir "lite-router.exe")
+    Copy-Item -LiteralPath $backendExe -Destination (Join-Path $stageDir "lite-router.exe")
     Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination (Join-Path $stageDir "LICENSE.txt")
 
     @"

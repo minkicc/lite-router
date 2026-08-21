@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const sidecarDir = resolve(scriptDir, '..', 'sidecar');
+const backendDir = resolve(scriptDir, '..', 'backend');
 const distDir = resolve(scriptDir, '..', 'src-tauri', 'binaries');
 mkdirSync(distDir, { recursive: true });
 
@@ -43,7 +43,7 @@ for (const target of selectedTargets) {
     'go',
     ['build', '-trimpath', '-ldflags', '-s -w', '-o', out, '.'],
     {
-      cwd: sidecarDir,
+      cwd: backendDir,
       stdio: 'inherit',
       env: {
         ...process.env,

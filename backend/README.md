@@ -1,4 +1,4 @@
-# Lite Router Sidecar
+# Lite Router Backend
 
 Lite Router 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康检查和本地使用记录。
 
@@ -26,7 +26,7 @@ Lite Router 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康�
 ./build.sh
 ```
 
-构建产物输出到 `../src-tauri/binaries/`，并按 Tauri sidecar 的 target triple 命名。
+构建产物输出到 `../src-tauri/binaries/`，并按 Tauri external binary 的 target triple 命名。
 
 ## 环境变量
 

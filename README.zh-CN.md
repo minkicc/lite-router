@@ -30,7 +30,7 @@ Codex / OpenAI-compatible client
   Channel A Channel B Channel C
 ```
 
-Tauri 提供桌面界面和进程管理，Go sidecar 提供 OpenAI 兼容代理、路由、健康检查和本地使用记录。
+Tauri 提供桌面界面和进程管理，Go 后端提供 OpenAI 兼容代理、路由、健康检查和本地使用记录。
 
 ## 安装
 
@@ -73,7 +73,7 @@ npm run dev
 运行 Go 测试：
 
 ```bash
-cd sidecar
+cd backend
 go test ./...
 ```
 
@@ -89,10 +89,10 @@ npm run build
 npm run portable:windows
 ```
 
-构建脚本默认生成所有支持架构的 Go sidecar。CI 也可以只生成指定架构：
+构建脚本默认生成所有支持架构的 Go 后端。CI 也可以只生成指定架构：
 
 ```bash
-npm run sidecar:build -- aarch64-apple-darwin
+npm run backend:build -- aarch64-apple-darwin
 ```
 
 支持的 target：

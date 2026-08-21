@@ -30,7 +30,7 @@ Codex / OpenAI-compatible client
   Channel A Channel B Channel C
 ```
 
-Tauri provides the desktop interface and process management. A Go sidecar provides the OpenAI-compatible proxy, routing, health checks, and local usage history.
+Tauri provides the desktop interface and process management. The Go backend provides the OpenAI-compatible proxy, routing, health checks, and local usage history.
 
 ## Installation
 
@@ -73,7 +73,7 @@ npm run dev
 Run the Go test suite:
 
 ```bash
-cd sidecar
+cd backend
 go test ./...
 ```
 
@@ -89,10 +89,10 @@ Create the Windows portable package after a full build:
 npm run portable:windows
 ```
 
-The sidecar build script creates binaries for all supported architectures by default. CI can request one target explicitly:
+The backend build script creates binaries for all supported architectures by default. CI can request one target explicitly:
 
 ```bash
-npm run sidecar:build -- aarch64-apple-darwin
+npm run backend:build -- aarch64-apple-darwin
 ```
 
 Supported targets:
