@@ -113,8 +113,6 @@ Desktop application data is stored in the system application configuration direc
 
 `config.json` contains upstream API keys and local access tokens. `usage.json` contains local usage records. Do not commit or share these files.
 
-When upgrading from an earlier build, Lite Router moves existing data from `com.literouter.desktop` to the new application directory automatically.
-
 Lite Router listens on `127.0.0.1` by default. When LAN access is enabled, keep token authentication enabled and only use the application on trusted networks. Lite Router does not upload configuration or usage records by itself; proxied requests are still sent to the upstream services you configure.
 
 ## Automated Builds

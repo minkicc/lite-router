@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"lite-router/internal/config"
-	"lite-router/internal/engine"
-	"lite-router/internal/server"
+	"github.com/minkicc/lite-router/backend/internal/config"
+	"github.com/minkicc/lite-router/backend/internal/engine"
+	"github.com/minkicc/lite-router/backend/internal/server"
 )
 
 //go:embed web/*

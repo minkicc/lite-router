@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"lite-router/internal/config"
-	"lite-router/internal/engine"
-	"lite-router/internal/routing"
+	"github.com/minkicc/lite-router/backend/internal/config"
+	"github.com/minkicc/lite-router/backend/internal/engine"
+	"github.com/minkicc/lite-router/backend/internal/routing"
 )
 
 const maxRequestBody = 64 << 20

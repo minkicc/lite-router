@@ -113,8 +113,6 @@ npm run backend:build -- aarch64-apple-darwin
 
 `config.json` 包含渠道 API Key 和本地访问 Token，`usage.json` 包含本地使用记录。不要将这些文件提交到 Git 仓库或发送给他人。
 
-从旧构建升级时，Lite Router 会自动将 `com.literouter.desktop` 中的现有数据迁移到新的应用目录。
-
 Lite Router 默认仅监听 `127.0.0.1`。开启「局域网访问」后，请务必启用 Token 验证，并只在可信网络中使用。Lite Router 不会主动上传配置或使用记录；代理请求仍会发送到你配置的上游服务。
 
 ## 自动构建
