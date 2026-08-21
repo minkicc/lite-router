@@ -117,11 +117,11 @@ Lite Router listens on `127.0.0.1` by default. When LAN access is enabled, keep 
 
 ## Automated Builds
 
-GitHub Actions builds Windows, macOS, and Linux packages on pushes, pull requests, and manual runs. Pushing a tag such as `v0.1.0` creates a GitHub Release and uploads all generated packages automatically.
+GitHub Actions builds Windows, macOS, and Linux packages on pushes, pull requests, and manual runs. Pushing a version tag such as `1.0` or `v1.0.0` creates a GitHub Release and uploads all generated packages automatically.
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag 1.0
+git push origin 1.0
 ```
 
 ## License
