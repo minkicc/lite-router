@@ -1,20 +1,22 @@
 # Lite Router
 
-Lite Router 是一个跨平台的本地 AI 模型路由桌面应用。Codex 或其他 OpenAI 兼容客户端只需连接一个固定的本地地址，Lite Router 会根据分组、优先级、模型映射和渠道健康状态选择上游渠道，并在请求失败时自动重试或切换渠道。
+English | [简体中文](README.zh-CN.md)
 
-## 功能
+Lite Router is a cross-platform desktop application for routing local AI model requests. Codex and other OpenAI-compatible clients connect to one stable local endpoint while Lite Router selects an upstream channel based on groups, priorities, model mappings, and channel health. Failed requests can be retried or routed to another available channel automatically.
 
-- 图形化管理渠道、分组、优先级、模型映射和访问 Token
-- 支持渠道健康检查、失败重试和自动切换
-- 支持将客户端模型名映射为不同渠道的上游模型名
-- 支持 `/v1/chat/completions`、`/v1/responses` 和 `/v1/models`
-- 支持多个本地访问 Token，并持久化请求数与 Token 用量
-- 本地保存使用记录，默认最多保留 500 条
-- 可选择允许局域网设备访问
-- 支持简体中文和英文
-- 支持 Windows、macOS 和 Linux
+## Features
 
-## 工作方式
+- Graphical management for channels, groups, priorities, model mappings, and access tokens
+- Channel health checks, retries, and automatic failover
+- Client model names can be mapped to different upstream model names
+- OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, and `/v1/models` endpoints
+- Multiple local access tokens with persistent request and token usage counters
+- Local usage history with a default limit of 500 records
+- Optional access from other devices on the local network
+- Simplified Chinese and English interface
+- Windows, macOS, and Linux support
+
+## How It Works
 
 ```text
 Codex / OpenAI-compatible client
@@ -28,72 +30,72 @@ Codex / OpenAI-compatible client
   Channel A Channel B Channel C
 ```
 
-Tauri 提供桌面界面和进程管理，Go sidecar 提供 OpenAI 兼容代理、路由、健康检查和本地使用记录。
+Tauri provides the desktop interface and process management. A Go sidecar provides the OpenAI-compatible proxy, routing, health checks, and local usage history.
 
-## 安装
+## Installation
 
-从 GitHub Releases 下载对应平台的安装包：
+Download the package for your platform from GitHub Releases:
 
-- Windows：`.exe` 或 `.msi`
-- Windows 绿色版：`portable.zip`，解压后运行 `Lite Router.exe`
-- macOS：`.dmg`
-- Linux：`.AppImage`、`.deb` 或 `.rpm`
+- Windows: `.exe` or `.msi`
+- Windows portable edition: extract `portable.zip` and run `Lite Router.exe`
+- macOS: `.dmg`
+- Linux: `.AppImage`, `.deb`, or `.rpm`
 
-macOS 和 Windows 的公开构建默认不包含商业代码签名证书。系统可能在首次启动时显示安全提示。
+Public macOS and Windows builds are not commercially code-signed by default. Your operating system may display a security warning the first time you launch the application.
 
-绿色版不需要安装，也不会写入程序目录以外的安装信息，但未签名的可执行文件仍可能触发 Windows SmartScreen。下载后可使用 Release 中的 `.sha256` 文件校验完整性。
+The Windows portable edition does not require installation, but unsigned executables may still trigger Microsoft Defender SmartScreen. Verify the download with the `.sha256` file included in the release.
 
-## 快速使用
+## Quick Start
 
-1. 打开 Lite Router，在「渠道」页添加至少一个上游渠道。
-2. 按需配置分组优先级、渠道优先级和模型映射。
-3. 在「接入」页复制 Base URL；若未开启「无需 Token」，请生成一个访问 Token。
-4. 将客户端的 Base URL 设置为 `http://127.0.0.1:8787/v1`，并填入访问 Token。
+1. Open Lite Router and add at least one upstream channel on the **Channels** tab.
+2. Configure group priorities, channel priorities, and model mappings as needed.
+3. Copy the Base URL from the **Connect** tab. Generate an access token unless **No Token Required** is enabled.
+4. Set the client Base URL to `http://127.0.0.1:8787/v1` and provide the generated access token.
 
-模型映射可以限定到某个渠道，也可以选择「所有」。选择「所有」时，只会匹配可用模型列表中包含该上游模型的渠道。
+A model mapping can target one channel or **All** channels. When **All** is selected, only channels whose available-model list contains the mapped upstream model are eligible.
 
-## 本地开发
+## Development
 
-环境要求：
+Requirements:
 
 - Node.js 20+
 - Rust stable
 - Go 1.23+
-- 当前系统所需的 [Tauri v2 系统依赖](https://v2.tauri.app/start/prerequisites/)
+- The [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system
 
-安装依赖并启动开发版：
+Install dependencies and start the development application:
 
 ```bash
 npm install
 npm run dev
 ```
 
-运行 Go 测试：
+Run the Go test suite:
 
 ```bash
 cd sidecar
 go test ./...
 ```
 
-构建当前平台安装包：
+Build packages for the current platform:
 
 ```bash
 npm run build
 ```
 
-完整构建后生成 Windows 绿色包：
+Create the Windows portable package after a full build:
 
 ```powershell
 npm run portable:windows
 ```
 
-构建脚本默认生成所有支持架构的 Go sidecar。CI 也可以只生成指定架构：
+The sidecar build script creates binaries for all supported architectures by default. CI can request one target explicitly:
 
 ```bash
 npm run sidecar:build -- aarch64-apple-darwin
 ```
 
-支持的 target：
+Supported targets:
 
 - `x86_64-pc-windows-msvc`
 - `x86_64-apple-darwin`
@@ -101,21 +103,21 @@ npm run sidecar:build -- aarch64-apple-darwin
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
 
-## 数据与安全
+## Data and Security
 
-桌面应用的数据保存在系统应用配置目录中。应用标识为 `com.literouter.desktop`；Windows 下通常位于：
+Desktop application data is stored in the system application configuration directory under the identifier `com.literouter.desktop`. On Windows, it is usually located at:
 
 ```text
 %APPDATA%\com.literouter.desktop\
 ```
 
-`config.json` 包含渠道 API Key 和本地访问 Token，`usage.json` 包含本地使用记录。不要将这些文件提交到 Git 仓库或发送给他人。
+`config.json` contains upstream API keys and local access tokens. `usage.json` contains local usage records. Do not commit or share these files.
 
-Lite Router 默认仅监听 `127.0.0.1`。开启「局域网访问」后，请务必启用 Token 验证，并只在可信网络中使用。Lite Router 不会主动上传配置或使用记录；代理请求仍会发送到你配置的上游服务。
+Lite Router listens on `127.0.0.1` by default. When LAN access is enabled, keep token authentication enabled and only use the application on trusted networks. Lite Router does not upload configuration or usage records by itself; proxied requests are still sent to the upstream services you configure.
 
-## 自动构建
+## Automated Builds
 
-GitHub Actions 会在推送、Pull Request 和手动触发时构建 Windows、macOS 与 Linux 安装包。推送形如 `v0.1.0` 的标签时，会自动创建 GitHub Release 并上传所有安装包。
+GitHub Actions builds Windows, macOS, and Linux packages on pushes, pull requests, and manual runs. Pushing a tag such as `v0.1.0` creates a GitHub Release and uploads all generated packages automatically.
 
 ```bash
 git tag v0.1.0
