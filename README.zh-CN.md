@@ -117,11 +117,11 @@ Lite Router 默认仅监听 `127.0.0.1`。开启「局域网访问」后，请�
 
 ## 自动构建
 
-GitHub Actions 会在推送、Pull Request 和手动触发时构建 Windows、macOS 与 Linux 安装包。推送形如 `1.0` 或 `v1.0.0` 的版本标签时，会自动创建 GitHub Release 并上传所有安装包。
+GitHub Actions 会在推送、Pull Request 和手动触发时构建 Windows、macOS 与 Linux 安装包。推送形如 `v1.0` 的版本标签时，会自动创建 GitHub Release 并上传所有安装包。
 
 ```bash
-git tag 1.0
-git push origin 1.0
+git tag v1.0
+git push origin v1.0
 ```
 
 ## License
