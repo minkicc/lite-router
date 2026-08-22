@@ -1,6 +1,6 @@
 [package]
 name = "lite-router-desktop"
-version = "1.0.4"
+version = "1.0.5"
 description = "A local OpenAI-compatible routing proxy with a cross-platform desktop UI"
 authors = ["Lite Router contributors"]
 license = "MIT"

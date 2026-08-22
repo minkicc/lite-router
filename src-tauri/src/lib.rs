@@ -389,6 +389,7 @@ pub fn run() {
                 }
             }
             setup_tray(&handle)?;
+            show_main_window(&handle);
             Ok(())
         })
         .on_window_event(|window, event| {
