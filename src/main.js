@@ -64,10 +64,10 @@ async function copyText(text) {
   }
 }
 
-async function safeInvoke(cmd) {
+async function safeInvoke(cmd, args) {
   if (!invoke) return null;
   try {
-    return await invoke(cmd);
+    return await invoke(cmd, args);
   } catch {
     return null;
   }
@@ -848,9 +848,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
   els.localeSelect.value = getLocale();
   applyTranslations();
+  void safeInvoke("set_locale", { locale: getLocale() });
   els.localeSelect.addEventListener("change", () => {
     const draft = modalDraft();
     setLocale(els.localeSelect.value);
+    void safeInvoke("set_locale", { locale: getLocale() });
     renderLocaleChange(draft);
   });
 

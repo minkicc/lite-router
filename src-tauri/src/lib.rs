@@ -1,5 +1,7 @@
 use std::sync::Mutex;
 
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -9,6 +11,9 @@ const DATA_FILES: [&str; 2] = ["config.json", "usage.json"];
 
 struct RouterState {
     child: Mutex<Option<CommandChild>>,
+    tray_toggle: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
+    tray_quit: Mutex<Option<MenuItem<tauri::Wry>>>,
+    locale: Mutex<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -93,6 +98,7 @@ async fn start_router(
     {
         let guard = state.child.lock().unwrap();
         if let Some(child) = guard.as_ref() {
+            sync_tray_status(&app);
             return Ok(RouterStatus {
                 running: true,
                 pid: Some(child.pid()),
@@ -103,6 +109,7 @@ async fn start_router(
     let child = spawn_router(&app)?;
     let pid = child.pid();
     *state.child.lock().unwrap() = Some(child);
+    sync_tray_status(&app);
 
     Ok(RouterStatus {
         running: true,
@@ -111,15 +118,168 @@ async fn start_router(
 }
 
 #[tauri::command]
-async fn stop_router(state: tauri::State<'_, RouterState>) -> Result<RouterStatus, String> {
-    let child = state.child.lock().unwrap().take();
-    if let Some(child) = child {
-        child.kill().map_err(|e| e.to_string())?;
-    }
+async fn stop_router(
+    app: AppHandle,
+    state: tauri::State<'_, RouterState>,
+) -> Result<RouterStatus, String> {
+    stop_router_child(&state)?;
+    sync_tray_status(&app);
     Ok(RouterStatus {
         running: false,
         pid: None,
     })
+}
+
+fn stop_router_child(state: &RouterState) -> Result<(), String> {
+    let child = state.child.lock().unwrap().take();
+    if let Some(child) = child {
+        child.kill().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn tray_status_text(locale: &str, running: bool, pid: Option<u32>) -> String {
+    if locale == "en-US" {
+        if running {
+            format!("Running (PID {})", pid.unwrap_or_default())
+        } else {
+            "Start".to_string()
+        }
+    } else if running {
+        format!("运行中 (PID {})", pid.unwrap_or_default())
+    } else {
+        "启动".to_string()
+    }
+}
+
+fn tray_quit_text(locale: &str) -> &'static str {
+    if locale == "en-US" {
+        "Quit"
+    } else {
+        "退出"
+    }
+}
+
+fn sync_tray_status(app: &AppHandle) {
+    let state = app.state::<RouterState>();
+    let (running, pid) = {
+        let child = state.child.lock().unwrap();
+        (child.is_some(), child.as_ref().map(|child| child.pid()))
+    };
+    let locale = state.locale.lock().unwrap().clone();
+    let item = state.tray_toggle.lock().unwrap().clone();
+    let quit_item = state.tray_quit.lock().unwrap().clone();
+    if let Some(item) = item {
+        let _ = item.set_checked(running);
+        let _ = item.set_text(tray_status_text(&locale, running, pid));
+    }
+    if let Some(item) = quit_item {
+        let _ = item.set_text(tray_quit_text(&locale));
+    }
+}
+
+#[tauri::command]
+fn set_locale(app: AppHandle, locale: String) -> Result<(), String> {
+    let normalized = if locale.to_lowercase().starts_with("zh") {
+        "zh-CN"
+    } else {
+        "en-US"
+    };
+    *app.state::<RouterState>().locale.lock().unwrap() = normalized.to_string();
+    sync_tray_status(&app);
+    Ok(())
+}
+
+fn toggle_router(app: &AppHandle) {
+    let running = app
+        .state::<RouterState>()
+        .child
+        .lock()
+        .unwrap()
+        .is_some();
+    if running {
+        let state = app.state::<RouterState>();
+        let _ = stop_router_child(&state);
+        sync_tray_status(app);
+        return;
+    }
+
+    match spawn_router(app) {
+        Ok(child) => {
+            *app.state::<RouterState>().child.lock().unwrap() = Some(child);
+            sync_tray_status(app);
+        }
+        Err(_) => sync_tray_status(app),
+    }
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    let state = app.state::<RouterState>();
+    let child = state.child.lock().unwrap();
+    let running = child.is_some();
+    let pid = child.as_ref().map(|child| child.pid());
+    drop(child);
+    let locale = state.locale.lock().unwrap().clone();
+    let toggle_item = CheckMenuItem::with_id(
+        app,
+        "toggle-router",
+        tray_status_text(&locale, running, pid),
+        true,
+        running,
+        None::<&str>,
+    )?;
+    let quit_item = MenuItem::with_id(
+        app,
+        "quit",
+        tray_quit_text(&locale),
+        true,
+        None::<&str>,
+    )?;
+    let menu = Menu::with_items(app, &[&toggle_item, &quit_item])?;
+    app.state::<RouterState>()
+        .tray_toggle
+        .lock()
+        .unwrap()
+        .replace(toggle_item.clone());
+    app.state::<RouterState>()
+        .tray_quit
+        .lock()
+        .unwrap()
+        .replace(quit_item.clone());
+    let handle = app.clone();
+    let mut tray = TrayIconBuilder::new()
+        .tooltip("Lite Router")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "toggle-router" => toggle_router(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(move |_tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(&handle);
+            }
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+    tray.build(app)?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -168,6 +328,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(RouterState {
             child: Mutex::new(None),
+            tray_toggle: Mutex::new(None),
+            tray_quit: Mutex::new(None),
+            locale: Mutex::new("zh-CN".to_string()),
         })
         .setup(|app| {
             let handle = app.handle().clone();
@@ -183,16 +346,31 @@ pub fn run() {
                     // 前端轮询状态时会显示未运行，并允许用户手动启动。
                 }
             }
+            setup_tray(&handle)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             start_router,
             stop_router,
             router_status,
-            get_router_base_url
+            get_router_base_url,
+            set_locale
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                let state = app.state::<RouterState>();
+                let _ = stop_router_child(&state);
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]
