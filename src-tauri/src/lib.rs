@@ -1,4 +1,7 @@
 use std::sync::Mutex;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::time::Duration;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -8,6 +11,7 @@ use tauri_plugin_shell::ShellExt;
 
 const LEGACY_APP_IDENTIFIER: &str = "com.literouter.desktop";
 const DATA_FILES: [&str; 2] = ["config.json", "usage.json"];
+const INSTANCE_ADDR: &str = "127.0.0.1:39127";
 
 struct RouterState {
     child: Mutex<Option<CommandChild>>,
@@ -221,6 +225,40 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+fn acquire_single_instance(app: &AppHandle) -> bool {
+    let listener = match TcpListener::bind(INSTANCE_ADDR) {
+        Ok(listener) => listener,
+        Err(_) => {
+            if let Ok(mut stream) = TcpStream::connect_timeout(
+                &INSTANCE_ADDR.parse().expect("valid instance address"),
+                Duration::from_millis(150),
+            ) {
+                let _ = stream.write_all(b"show");
+            }
+            return false;
+        }
+    };
+
+    let _ = listener.set_nonblocking(true);
+    let handle = app.clone();
+    std::thread::spawn(move || loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut message = [0_u8; 4];
+                let _ = stream.read_exact(&mut message);
+                if &message == b"show" {
+                    show_main_window(&handle);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => break,
+        }
+    });
+    true
+}
+
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let state = app.state::<RouterState>();
     let child = state.child.lock().unwrap();
@@ -334,6 +372,10 @@ pub fn run() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
+            if !acquire_single_instance(&handle) {
+                handle.exit(0);
+                return Ok(());
+            }
             match spawn_router(&handle) {
                 Ok(child) => {
                     *handle
