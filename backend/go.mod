@@ -1,3 +1,3 @@
-module github.com/minkicc/lite-router/backend
+module github.com/minkicc/mkswitch/backend
 
 go 1.23

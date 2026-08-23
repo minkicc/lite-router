@@ -17,7 +17,7 @@ foreach ($target in $targets) {
     $env:GOOS = $target.GOOS
     $env:GOARCH = $target.GOARCH
     $env:CGO_ENABLED = "0"
-    $name = "lite-router-$($target.Triple)$($target.Ext)"
+    $name = "mkswitch-$($target.Triple)$($target.Ext)"
     $out = Join-Path $dist $name
     Write-Host "building $name"
     go build -trimpath -ldflags "-s -w" -o $out .

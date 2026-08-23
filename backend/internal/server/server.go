@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/minkicc/lite-router/backend/internal/config"
-	"github.com/minkicc/lite-router/backend/internal/engine"
-	"github.com/minkicc/lite-router/backend/internal/routing"
+	"github.com/minkicc/mkswitch/backend/internal/config"
+	"github.com/minkicc/mkswitch/backend/internal/engine"
+	"github.com/minkicc/mkswitch/backend/internal/routing"
 )
 
 const maxRequestBody = 64 << 20
@@ -120,7 +120,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			"id":       model,
 			"object":   "model",
 			"created":  now,
-			"owned_by": "lite-router",
+			"owned_by": "mkswitch",
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

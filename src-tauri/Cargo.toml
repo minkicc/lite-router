@@ -1,8 +1,8 @@
 [package]
-name = "lite-router-desktop"
+name = "mkswitch-desktop"
 version = "1.0.6"
 description = "A local OpenAI-compatible routing proxy with a cross-platform desktop UI"
-authors = ["Lite Router contributors"]
+authors = ["MKSwitch contributors"]
 license = "MIT"
 edition = "2021"
 
@@ -12,7 +12,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "lite_router_lib"
+name = "mkswitch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

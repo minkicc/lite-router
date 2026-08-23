@@ -9,7 +9,7 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "binaries/lite-router",
+          "name": "binaries/mkswitch",
           "sidecar": true,
           "args": true
         }

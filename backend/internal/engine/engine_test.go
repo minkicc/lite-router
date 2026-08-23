@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/minkicc/lite-router/backend/internal/config"
-	"github.com/minkicc/lite-router/backend/internal/routing"
+	"github.com/minkicc/mkswitch/backend/internal/config"
+	"github.com/minkicc/mkswitch/backend/internal/routing"
 )
 
 func boolPtr(v bool) *bool { return &v }

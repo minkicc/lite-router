@@ -1,4 +1,4 @@
-const STORAGE_KEY = "lite-router.locale";
+const STORAGE_KEY = "mkswitch.locale";
 
 const messages = {
   "zh-CN": {

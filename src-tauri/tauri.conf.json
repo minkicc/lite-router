@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Lite Router",
+  "productName": "MKSwitch",
   "version": "1.0.6",
-  "identifier": "cc.minki.literouter",
+  "identifier": "cc.minki.mkswitch",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Lite Router",
+        "title": "MKSwitch",
         "width": 1120,
         "height": 780,
         "minWidth": 880,
@@ -33,7 +33,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/lite-router"
+      "binaries/mkswitch"
     ],
     "windows": {
       "nsis": {

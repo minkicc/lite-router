@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
-const LEGACY_APP_IDENTIFIER: &str = "com.literouter.desktop";
+const LEGACY_APP_IDENTIFIER: &str = "cc.minki.literouter";
 const DATA_FILES: [&str; 2] = ["config.json", "usage.json"];
 const INSTANCE_ADDR: &str = "127.0.0.1:39127";
 
@@ -71,7 +71,7 @@ fn spawn_router(app: &AppHandle) -> Result<CommandChild, String> {
 
     let backend_command = app
         .shell()
-        .sidecar("lite-router")
+        .sidecar("mkswitch")
         .map_err(|e| e.to_string())?;
 
     let (mut rx, child) = backend_command
@@ -294,7 +294,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .replace(quit_item.clone());
     let handle = app.clone();
     let mut tray = TrayIconBuilder::new()
-        .tooltip("Lite Router")
+        .tooltip("MKSwitch")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -426,14 +426,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("lite-router-migration-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!("mkswitch-migration-{}-{nonce}", std::process::id()))
     }
 
     #[test]
     fn migrates_legacy_data_without_overwriting_new_files() {
         let root = temp_config_root();
         let old_dir = root.join(LEGACY_APP_IDENTIFIER);
-        let new_dir = root.join("cc.minki.literouter");
+        let new_dir = root.join("cc.minki.mkswitch");
         std::fs::create_dir_all(&old_dir).unwrap();
         std::fs::create_dir_all(&new_dir).unwrap();
         std::fs::write(old_dir.join("config.json"), "old config").unwrap();

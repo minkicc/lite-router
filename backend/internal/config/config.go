@@ -122,9 +122,9 @@ func Default() *Config {
 
 func DefaultPath() string {
 	if dir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(dir) != "" {
-		return filepath.Join(dir, "lite-router", "config.json")
+		return filepath.Join(dir, "mkswitch", "config.json")
 	}
-	return "lite-router.json"
+	return "mkswitch.json"
 }
 
 func Load(path string) (*Config, error) {

@@ -92,7 +92,7 @@ jobs:
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
-          name: lite-router-${{ matrix.target }}
+          name: mkswitch-${{ matrix.target }}
           if-no-files-found: error
           retention-days: 14
           path: |

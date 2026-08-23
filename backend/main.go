@@ -16,18 +16,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/minkicc/lite-router/backend/internal/config"
-	"github.com/minkicc/lite-router/backend/internal/engine"
-	"github.com/minkicc/lite-router/backend/internal/server"
+	"github.com/minkicc/mkswitch/backend/internal/config"
+	"github.com/minkicc/mkswitch/backend/internal/engine"
+	"github.com/minkicc/mkswitch/backend/internal/server"
 )
 
 //go:embed web/*
 var webFS embed.FS
 
 func main() {
-	cfgPath := flag.String("config", os.Getenv("LITE_ROUTER_CONFIG_PATH"), "path to config.json")
-	noBrowser := flag.Bool("no-browser", os.Getenv("LITE_ROUTER_NO_BROWSER") == "1", "do not open the admin page in a browser")
-	listenAddr := flag.String("listen", os.Getenv("LITE_ROUTER_LISTEN_ADDR"), "override listen address")
+	cfgPath := flag.String("config", os.Getenv("MKSWITCH_CONFIG_PATH"), "path to config.json")
+	noBrowser := flag.Bool("no-browser", os.Getenv("MKSWITCH_NO_BROWSER") == "1", "do not open the admin page in a browser")
+	listenAddr := flag.String("listen", os.Getenv("MKSWITCH_LISTEN_ADDR"), "override listen address")
 	flag.Parse()
 
 	if strings.TrimSpace(*cfgPath) == "" {
@@ -72,7 +72,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("lite-router listening on http://%s", bindAddr)
+		log.Printf("mkswitch listening on http://%s", bindAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}

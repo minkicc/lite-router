@@ -1,6 +1,6 @@
-# Lite Router Backend
+# MKSwitch Backend
 
-Lite Router 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康检查和本地使用记录。
+MKSwitch 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康检查和本地使用记录。
 
 ## 接口
 
@@ -30,6 +30,6 @@ Lite Router 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康�
 
 ## 环境变量
 
-- `LITE_ROUTER_CONFIG_PATH`：配置文件路径
-- `LITE_ROUTER_NO_BROWSER`：设为 `1` 时不自动打开管理页
-- `LITE_ROUTER_LISTEN_ADDR`：覆盖监听地址
+- `MKSWITCH_CONFIG_PATH`：配置文件路径
+- `MKSWITCH_NO_BROWSER`：设为 `1` 时不自动打开管理页
+- `MKSWITCH_LISTEN_ADDR`：覆盖监听地址

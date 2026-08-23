@@ -36,7 +36,7 @@ if (selectedTargets.length === 0) {
 }
 
 for (const target of selectedTargets) {
-  const name = `lite-router-${target.triple}${target.ext}`;
+  const name = `mkswitch-${target.triple}${target.ext}`;
   const out = join(distDir, name);
   console.log(`building ${name}`);
   const result = spawnSync(
