@@ -817,7 +817,10 @@ func copyRequestHeaders(dst, src http.Header) {
 
 func copyResponseHeaders(dst, src http.Header) {
 	for key, values := range src {
-		if isHopByHopHeader(key) {
+		// Content-Length must not be forwarded verbatim. The router may stream
+		// the body (or the upstream length may be wrong), so Go recomputes it
+		// from what is actually written, or switches to chunked encoding.
+		if isHopByHopHeader(key) || strings.EqualFold(key, "Content-Length") {
 			continue
 		}
 		for _, value := range values {

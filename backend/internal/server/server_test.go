@@ -113,6 +113,25 @@ func TestRewriteRequestBody(t *testing.T) {
 	}
 }
 
+func TestCopyResponseHeadersStripsContentLength(t *testing.T) {
+	src := http.Header{
+		"Content-Type":   []string{"text/event-stream"},
+		"Content-Length": []string{"10"},
+		"Connection":     []string{"keep-alive"},
+	}
+	dst := http.Header{}
+	copyResponseHeaders(dst, src)
+	if got := dst.Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length should be stripped, got %q", got)
+	}
+	if got := dst.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type was not copied: %q", got)
+	}
+	if got := dst.Get("Connection"); got != "" {
+		t.Fatalf("hop-by-hop Connection should be stripped, got %q", got)
+	}
+}
+
 func TestParseUsage(t *testing.T) {
 	tests := []struct {
 		name string
