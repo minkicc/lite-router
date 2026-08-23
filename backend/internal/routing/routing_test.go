@@ -2,6 +2,19 @@ package routing
 
 import "testing"
 
+func TestRetryableStatusClassification(t *testing.T) {
+	for _, status := range []int{408, 425, 429, 500, 502, 503, 504} {
+		if !IsRetryableStatus(status) || !IsRetryableOnSameRoute(status) {
+			t.Fatalf("status %d should retry on the same route", status)
+		}
+	}
+	for _, status := range []int{401, 403, 404} {
+		if !IsRetryableStatus(status) || IsRetryableOnSameRoute(status) {
+			t.Fatalf("status %d should switch routes without same-route retry", status)
+		}
+	}
+}
+
 func TestResolveMappingUsesAdvertisedUpstreamModel(t *testing.T) {
 	mappings := []ModelMapping{{
 		PlatformModel: "gpt-5.6-sol",

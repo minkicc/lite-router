@@ -172,7 +172,14 @@ func healthRank(status Status) int {
 }
 
 func IsRetryableStatus(status int) bool {
-	return status == 401 || status == 403 || status == 404 || status == 408 || status == 429 || status >= 500
+	return status == 401 || status == 403 || status == 404 || status == 408 || status == 425 || status == 429 || status >= 500
+}
+
+// IsRetryableOnSameRoute reports errors where repeating the request against
+// the same upstream is useful. Authentication, permission, and missing-route
+// errors should move to another channel immediately instead.
+func IsRetryableOnSameRoute(status int) bool {
+	return status == 408 || status == 425 || status == 429 || status >= 500
 }
 
 func ResponseFailed(body []byte) bool {

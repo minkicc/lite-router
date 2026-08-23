@@ -287,7 +287,13 @@ function renderTokens() {
           <td class="actions-cell">
             <button class="mini" data-action="copy-token" data-id="${esc(token.id)}">${esc(t("actions.copy"))}</button>
             <button class="mini" data-action="toggle-token" data-id="${esc(token.id)}">${esc(t(enabled ? "actions.disable" : "actions.enable"))}</button>
-            <button class="mini danger" data-action="delete-token" data-id="${esc(token.id)}">${esc(t("actions.delete"))}</button>
+            <span class="token-action-menu">
+              <button class="mini icon-button" type="button" title="${esc(t("tokens.settings"))}" aria-label="${esc(t("tokens.settings"))}" data-action="toggle-token-menu" data-id="${esc(token.id)}">⚙</button>
+              <span class="action-menu" popover="auto" data-token-menu="${esc(token.id)}">
+                <button type="button" data-action="edit-token" data-id="${esc(token.id)}">${esc(t("actions.edit"))}</button>
+                <button type="button" class="danger" data-action="delete-token" data-id="${esc(token.id)}">${esc(t("actions.delete"))}</button>
+              </span>
+            </span>
           </td>
         </tr>`;
     })
@@ -525,6 +531,13 @@ function tokenFormHtml() {
     </div>`;
 }
 
+function tokenEditFormHtml(token) {
+  return `
+    <div class="form-section">
+      <label>${esc(t("tokens.title"))}<input name="name" value="${esc(token?.name || "")}" placeholder="${esc(t("tokens.namePlaceholder"))}"></label>
+    </div>`;
+}
+
 function openChannelForm(index) {
   const ch = index >= 0 ? config.channels[index] : null;
   modalType = "channel";
@@ -545,8 +558,19 @@ function openMappingForm(index) {
 
 function openTokenForm() {
   modalType = "token";
+  modalId = null;
   els.modalTitle.textContent = t("tokens.generate");
   els.modalBody.innerHTML = tokenFormHtml();
+  els.modal.classList.remove("hidden");
+}
+
+function openTokenEditForm(id) {
+  const token = tokens.find((item) => item.id === id);
+  if (!token) return;
+  modalType = "token-edit";
+  modalId = id;
+  els.modalTitle.textContent = t("tokens.edit");
+  els.modalBody.innerHTML = tokenEditFormHtml(token);
   els.modal.classList.remove("hidden");
 }
 
@@ -656,6 +680,25 @@ async function saveModal() {
     closeModal();
     refresh();
     toast(t("tokens.generated"));
+  } else if (modalType === "token-edit") {
+    const name = els.modalBody.querySelector('[name="name"]')?.value.trim() || "";
+    if (!name) {
+      toast(t("tokens.nameRequired"));
+      return;
+    }
+    const res = await fetch(`${baseUrl}/api/tokens/${encodeURIComponent(modalId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      toast(t("common.saveFailed", { error: data.error || res.status }));
+      return;
+    }
+    closeModal();
+    refresh();
+    toast(t("tokens.updated"));
   }
 }
 
@@ -734,6 +777,28 @@ async function handleAction(action, target) {
     const t = tokens.find((x) => x.id === id);
     return copyText(t?.token || "");
   }
+  if (action === "toggle-token-menu") {
+    const menu = document.querySelector(`[data-token-menu="${CSS.escape(id)}"]`);
+    if (!menu) return;
+    if (menu.matches(":popover-open")) {
+      menu.hidePopover();
+      return;
+    }
+    document.querySelectorAll("[data-token-menu]:popover-open").forEach((item) => item.hidePopover());
+    menu.showPopover();
+    const buttonRect = target.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const top = buttonRect.top > menuRect.height + 12
+      ? buttonRect.top - menuRect.height - 5
+      : buttonRect.bottom + 5;
+    menu.style.left = `${Math.max(8, Math.min(buttonRect.right - menuRect.width, window.innerWidth - menuRect.width - 8))}px`;
+    menu.style.top = `${top}px`;
+    return;
+  }
+  if (action === "edit-token") {
+    document.querySelector(`[data-token-menu="${CSS.escape(id)}"]`)?.hidePopover();
+    return openTokenEditForm(id);
+  }
   if (action === "toggle-token") {
     const t = tokens.find((x) => x.id === id);
     await fetch(`${baseUrl}/api/tokens/${encodeURIComponent(id)}`, {
@@ -744,6 +809,7 @@ async function handleAction(action, target) {
     return refresh();
   }
   if (action === "delete-token") {
+    document.querySelector(`[data-token-menu="${CSS.escape(id)}"]`)?.hidePopover();
     await fetch(`${baseUrl}/api/tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
     return refresh();
   }
@@ -789,7 +855,7 @@ function modalDraft() {
   if (els.modal.classList.contains("hidden")) return null;
   if (modalType === "channel") return collectChannelForm();
   if (modalType === "mapping") return collectMappingForm();
-  if (modalType === "token") return { name: els.modalBody.querySelector('[name="name"]')?.value || "" };
+  if (modalType === "token" || modalType === "token-edit") return { name: els.modalBody.querySelector('[name="name"]')?.value || "" };
   return null;
 }
 
@@ -816,6 +882,9 @@ function renderLocaleChange(draft) {
     els.modalTitle.textContent = t("tokens.generate");
     els.modalBody.innerHTML = tokenFormHtml();
     els.modalBody.querySelector('[name="name"]').value = draft.name;
+  } else if (modalType === "token-edit" && draft) {
+    els.modalTitle.textContent = t("tokens.edit");
+    els.modalBody.innerHTML = tokenEditFormHtml({ name: draft.name });
   }
 }
 
@@ -912,6 +981,12 @@ window.addEventListener("DOMContentLoaded", () => {
     btn.addEventListener("click", () => {
       copyText(btn.dataset.copy === "base-url" ? els.baseUrl.textContent : "");
     });
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".token-action-menu")) {
+      document.querySelectorAll("[data-token-menu]:popover-open").forEach((menu) => menu.hidePopover());
+    }
   });
 
   document.addEventListener("click", (e) => {

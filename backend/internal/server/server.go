@@ -174,6 +174,10 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	var lastForwardErr error
 	var lastSelection *engine.Selection
 	for {
+		if err := r.Context().Err(); err != nil {
+			lastErr = err
+			break
+		}
 		selection, selectErr := s.engine.Select(requestedModel, excluded)
 		if selectErr != nil {
 			lastErr = selectErr
@@ -181,23 +185,37 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		lastSelection = selection
 		maxRetries := selection.Channel.MaxRetries
-		if maxRetries < 0 {
-			maxRetries = 0
+		if maxRetries < 1 {
+			// A transient upstream failure gets one automatic retry even when
+			// the channel has no explicit retry setting.
+			maxRetries = 1
 		}
 		attempts := 0
 		for {
+			if err := r.Context().Err(); err != nil {
+				lastErr = err
+				break
+			}
 			retry, usage, forwardErr := s.forward(w, r, selection, body)
 			if forwardErr != nil {
 				lastErr = forwardErr
 				lastForwardErr = forwardErr
 			}
+			if r.Context().Err() != nil {
+				lastErr = r.Context().Err()
+				break
+			}
 			if !retry {
+				if forwardErr != nil {
+					s.recordUsage(r, tokenID, requestedModel, selection, usageInfo{}, start, false, errorText(forwardErr))
+					return
+				}
 				s.recordTokens(tokenID, usage)
 				s.recordUsage(r, tokenID, requestedModel, selection, usage, start, true, "")
 				return
 			}
 			attempts++
-			if attempts > maxRetries {
+			if !retryOnSameChannel(forwardErr) || attempts > maxRetries {
 				excluded[selection.Channel.ID] = true
 				break
 			}
@@ -209,6 +227,19 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordUsage(r, tokenID, requestedModel, lastSelection, usageInfo{}, start, false, errMsg)
 	writeProxyError(w, http.StatusBadGateway, "all channels failed", "upstream_unavailable", errorText(lastErr))
+}
+
+type retryDecisionError struct {
+	err  error
+	same bool
+}
+
+func (e *retryDecisionError) Error() string { return e.err.Error() }
+func (e *retryDecisionError) Unwrap() error { return e.err }
+
+func retryOnSameChannel(err error) bool {
+	var decision *retryDecisionError
+	return errors.As(err, &decision) && decision.same
 }
 
 func (s *Server) recordUsage(r *http.Request, tokenID, model string, selection *engine.Selection, usage usageInfo, start time.Time, success bool, errText string) {
@@ -241,12 +272,12 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 	ch := selection.Channel
 	rewritten, stream, err := rewriteRequestBody(body, selection.UpstreamModel)
 	if err != nil {
-		return false, usageInfo{}, err
+		return true, usageInfo{}, &retryDecisionError{err: err, same: false}
 	}
 	target := engine.BuildURL(ch.BaseURL, r.URL.Path)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(rewritten))
 	if err != nil {
-		return false, usageInfo{}, err
+		return true, usageInfo{}, &retryDecisionError{err: err, same: false}
 	}
 	copyRequestHeaders(req.Header, r.Header)
 	if strings.TrimSpace(ch.APIKey) != "" {
@@ -259,27 +290,83 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 	resp, err := s.engine.ProxyClient().Do(req)
 	if err != nil {
 		s.engine.RecordAttempt(ch.ID, 0, err, time.Since(start))
-		return true, usageInfo{}, err
+		if r.Context().Err() != nil || errors.Is(err, context.Canceled) {
+			return true, usageInfo{}, &retryDecisionError{err: err, same: false}
+		}
+		return true, usageInfo{}, &retryDecisionError{err: err, same: true}
 	}
 	defer resp.Body.Close()
 	latency := time.Since(start)
 
+	if routing.IsRetryableError(resp.StatusCode, nil) {
+		retryErr := &retryDecisionError{
+			err:  fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode)),
+			same: routing.IsRetryableOnSameRoute(resp.StatusCode),
+		}
+		// Do not consume a potentially large error response before switching.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, latency)
+		return true, usageInfo{}, retryErr
+	}
+
+	if stream {
+		copyResponseHeaders(w.Header(), resp.Header)
+		flusher, _ := w.(http.Flusher)
+		var captured bytes.Buffer
+		tee := io.TeeReader(resp.Body, &captured)
+		buf := make([]byte, 32<<10)
+		wrote := false
+		for {
+			n, readErr := tee.Read(buf)
+			if n > 0 {
+				if !wrote {
+					if routing.ResponseFailed(captured.Bytes()) {
+						s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, time.Since(start))
+						return true, usageInfo{}, &retryDecisionError{err: errors.New("upstream response failed"), same: true}
+					}
+					w.WriteHeader(resp.StatusCode)
+				}
+				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+					return false, parseSSEUsageBody(captured.Bytes()), writeErr
+				}
+				wrote = true
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					if !wrote {
+						w.WriteHeader(resp.StatusCode)
+					}
+					s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, time.Since(start))
+					return false, parseSSEUsageBody(captured.Bytes()), nil
+				}
+				s.engine.RecordAttempt(ch.ID, resp.StatusCode, readErr, time.Since(start))
+				if !wrote {
+					return true, usageInfo{}, &retryDecisionError{err: readErr, same: true}
+				}
+				return false, parseSSEUsageBody(captured.Bytes()), readErr
+			}
+		}
+	}
+
 	data, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
 		s.engine.RecordAttempt(ch.ID, resp.StatusCode, readErr, latency)
-		return true, usageInfo{}, readErr
+		return true, usageInfo{}, &retryDecisionError{err: readErr, same: true}
 	}
 
 	if routing.IsRetryableError(resp.StatusCode, data) {
 		s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, latency)
-		return true, usageInfo{}, errors.New(http.StatusText(resp.StatusCode))
+		return true, usageInfo{}, &retryDecisionError{
+			err:  errors.New(http.StatusText(resp.StatusCode)),
+			same: routing.IsRetryableOnSameRoute(resp.StatusCode),
+		}
 	}
 
 	s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, latency)
 	usage := parseUsage(data)
-	if stream {
-		usage = parseSSEUsageBody(data)
-	}
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	if _, writeErr := w.Write(data); writeErr != nil {

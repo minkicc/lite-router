@@ -79,6 +79,13 @@ type Engine struct {
 	healthClient *http.Client
 }
 
+const (
+	proxyTimeout = 10 * time.Minute
+	// Allow slow reasoning/model cold starts while still failing a dead
+	// upstream before the full streaming request timeout elapses.
+	proxyHeaderTimeout = 5 * time.Minute
+)
+
 func (e *Engine) ProxyClient() *http.Client {
 	return e.proxyClient
 }
@@ -92,11 +99,11 @@ func New(cfg *config.Config) (*Engine, error) {
 		return nil, err
 	}
 	proxyTransport := http.DefaultTransport.(*http.Transport).Clone()
-	proxyTransport.ResponseHeaderTimeout = 30 * time.Second
+	proxyTransport.ResponseHeaderTimeout = proxyHeaderTimeout
 	e := &Engine{
 		runtimes:     map[string]*channelRuntime{},
 		checking:     map[string]bool{},
-		proxyClient:  &http.Client{Transport: proxyTransport},
+		proxyClient:  &http.Client{Transport: proxyTransport, Timeout: proxyTimeout},
 		healthClient: &http.Client{},
 	}
 	e.ReplaceConfig(cfg)

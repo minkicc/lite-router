@@ -1,10 +1,87 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/minkicc/lite-router/backend/internal/config"
+	"github.com/minkicc/lite-router/backend/internal/engine"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
+
+func TestForwardStreamsResponseImmediately(t *testing.T) {
+	eng, err := engine.New(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(bytes.NewBufferString(
+				"event: response.completed\n" +
+					"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n",
+			)),
+		}, nil
+	})
+	srv := &Server{engine: eng}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	recorder := httptest.NewRecorder()
+	selection := &engine.Selection{Channel: config.Channel{ID: "#1", BaseURL: "https://example.com"}, UpstreamModel: "gpt-test"}
+
+	retry, usage, err := srv.forward(recorder, req, selection, []byte(`{"model":"gpt-test","stream":true}`))
+	if err != nil || retry {
+		t.Fatalf("retry=%v err=%v", retry, err)
+	}
+	if usage != (usageInfo{PromptTokens: 3, CompletionTokens: 2}) {
+		t.Fatalf("usage = %+v", usage)
+	}
+	if recorder.Body.Len() == 0 {
+		t.Fatal("stream body was not forwarded")
+	}
+}
+
+func TestForwardDoesNotRetryCanceledRequest(t *testing.T) {
+	eng, err := engine.New(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, context.Canceled
+	})
+	srv := &Server{engine: eng}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+	selection := &engine.Selection{Channel: config.Channel{ID: "#1", BaseURL: "https://example.com"}, UpstreamModel: "gpt-test"}
+
+	retry, _, err := srv.forward(httptest.NewRecorder(), req, selection, []byte(`{"model":"gpt-test"}`))
+	if !retry || retryOnSameChannel(err) {
+		t.Fatalf("retry=%v same-channel=%v err=%v", retry, retryOnSameChannel(err), err)
+	}
+}
+
+func TestRetryOnSameChannel(t *testing.T) {
+	if retryOnSameChannel(errors.New("network failure")) {
+		t.Fatal("plain errors must not be treated as retry decisions")
+	}
+	if !retryOnSameChannel(&retryDecisionError{err: errors.New("timeout"), same: true}) {
+		t.Fatal("same-channel retry decision was not recognized")
+	}
+	if retryOnSameChannel(&retryDecisionError{err: errors.New("unauthorized"), same: false}) {
+		t.Fatal("route-switch decision must not retry the same channel")
+	}
+}
 
 func TestBuildFallbackChain(t *testing.T) {
 	fallbacks := map[string]string{
