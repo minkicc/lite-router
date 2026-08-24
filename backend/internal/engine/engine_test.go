@@ -123,6 +123,58 @@ func TestRecordAttemptDoesNotCooldown(t *testing.T) {
 	}
 }
 
+func TestCooldownDurationEscalates(t *testing.T) {
+	cases := []struct {
+		n    int
+		want time.Duration
+	}{
+		{1, 60 * time.Second},
+		{2, 5 * time.Minute},
+		{3, 15 * time.Minute},
+		{4, 15 * time.Minute},
+		{10, 15 * time.Minute},
+	}
+	for _, c := range cases {
+		if got := cooldownDuration(c.n); got != c.want {
+			t.Errorf("cooldownDuration(%d) = %v, want %v", c.n, got, c.want)
+		}
+	}
+}
+
+func TestCooldownEscalatesAndResetsOnSuccess(t *testing.T) {
+	cfg := testConfig(
+		config.Channel{ID: "a", BaseURL: "https://a.example.com", Models: []string{"gpt-4"}},
+	)
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng.Cooldown("a")
+	eng.Cooldown("a")
+	eng.Cooldown("a")
+	eng.Cooldown("a")
+
+	cooldownCount := func() int {
+		for _, st := range eng.State() {
+			if st.ID == "a" {
+				return st.CooldownCount
+			}
+		}
+		return -1
+	}
+	if got := cooldownCount(); got != 4 {
+		t.Fatalf("cooldown count = %d, want 4", got)
+	}
+
+	// A successful attempt resets the escalation ladder.
+	eng.RecordAttempt("a", 200, nil, 10*time.Millisecond)
+	eng.Cooldown("a")
+	if got := cooldownCount(); got != 1 {
+		t.Fatalf("cooldown count after success = %d, want 1", got)
+	}
+}
+
 func TestResolveChannelModelMapping(t *testing.T) {
 	ch := config.Channel{
 		ID:            "deepseek",

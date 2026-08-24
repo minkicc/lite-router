@@ -48,6 +48,7 @@ type ChannelState struct {
 	LastChecked          int64             `json:"last_checked"`
 	LastError            string            `json:"last_error,omitempty"`
 	CooldownUntil        int64             `json:"cooldown_until,omitempty"`
+	CooldownCount        int               `json:"cooldown_count,omitempty"`
 }
 
 type Selection struct {
@@ -65,6 +66,7 @@ type healthState struct {
 	lastError            string
 	nextCheck            time.Time
 	cooldownUntil        time.Time
+	consecutiveCooldowns int
 }
 
 type channelRuntime struct {
@@ -88,10 +90,12 @@ const (
 	// Allow slow reasoning/model cold starts while still failing a dead
 	// upstream before the full streaming request timeout elapses.
 	proxyHeaderTimeout = 5 * time.Minute
-	// After a real request fails, keep the channel out of routing for a
-	// short window so subsequent requests fail over to other channels instead
-	// of hammering the same broken upstream.
-	cooldownAfterFailure = 60 * time.Second
+	// Cooldown escalates with consecutive failures: the first failed request
+	// cools a channel down briefly, and repeated failures keep it out of
+	// routing for progressively longer windows. A success resets the ladder.
+	cooldownFirst  = 60 * time.Second
+	cooldownSecond = 5 * time.Minute
+	cooldownLater  = 15 * time.Minute
 )
 
 func (e *Engine) ProxyClient() *http.Client {
@@ -353,6 +357,7 @@ func (e *Engine) recordSuccess(id string, status int, latency time.Duration) {
 	rt.health.lastChecked = time.Now()
 	rt.health.lastError = ""
 	rt.health.responseTime = latency
+	rt.health.consecutiveCooldowns = 0
 	threshold := health.SuccessThreshold
 	if threshold <= 0 {
 		threshold = 1
@@ -414,7 +419,21 @@ func (e *Engine) Cooldown(id string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if rt, ok := e.runtimes[id]; ok {
-		rt.health.cooldownUntil = time.Now().Add(cooldownAfterFailure)
+		rt.health.consecutiveCooldowns++
+		rt.health.cooldownUntil = time.Now().Add(cooldownDuration(rt.health.consecutiveCooldowns))
+	}
+}
+
+// cooldownDuration returns the cooldown window for the nth consecutive
+// failure: 60s for the first, 5m for the second, and 15m from the third on.
+func cooldownDuration(consecutive int) time.Duration {
+	switch {
+	case consecutive <= 1:
+		return cooldownFirst
+	case consecutive == 2:
+		return cooldownSecond
+	default:
+		return cooldownLater
 	}
 }
 
@@ -455,6 +474,7 @@ func (e *Engine) State() []ChannelState {
 			LastChecked:          rt.health.lastChecked.Unix(),
 			LastError:            rt.health.lastError,
 			CooldownUntil:        cooldownUntilUnix(rt.health.cooldownUntil),
+			CooldownCount:        rt.health.consecutiveCooldowns,
 		}
 		out = append(out, st)
 	}
