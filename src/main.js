@@ -18,6 +18,10 @@ let usageRefreshTimer = null;
 let usageLoading = false;
 let lastProcessStatus = null;
 let lastUsageData = null;
+let codexStatus = null;
+let codexBackups = [];
+let codexBusy = false;
+let terminalEventSource = null;
 
 function statusLabel(status) {
   const key = ["healthy", "unknown", "unhealthy", "disabled"].includes(status) ? status : "unknown";
@@ -135,7 +139,7 @@ function channelRowHtml(entry, stateMap) {
   return `
     <tr>
       <td><span class="badge ${esc(st.status || "unknown")}">${esc(label)}</span></td>
-      <td>${esc(ch.name || ch.id)}<div class="sub">${esc(ch.id || "")}</div></td>
+      <td>${esc(ch.name || ch.id)}<div class="sub">${esc(ch.id || "")}${ch.auth_type === "codex" ? ` · ${esc(t("channels.authCodexShort"))}` : ""}</div></td>
       <td class="mono">${esc(ch.base_url)}</td>
       <td>${ch.priority ?? 0}</td>
       <td>${esc(ch.group || "default")}</td>
@@ -396,6 +400,234 @@ function usageTabActive() {
   return document.querySelector('.tab.active')?.dataset.tab === "usage";
 }
 
+function codexTabActive() {
+  return document.querySelector('.tab.active')?.dataset.tab === "tools";
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let scaled = value;
+  let unitIndex = 0;
+  while (scaled >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024;
+    unitIndex += 1;
+  }
+  if (unitIndex === 0) return `${value} B`;
+  const digits = scaled >= 10 ? 1 : 2;
+  return `${scaled.toFixed(digits).replace(/\.0$/, "")} ${units[unitIndex]}`;
+}
+
+function codexOverviewHtml(status) {
+  const sqlite = status.sqlite_counts;
+  const sqliteSessions = sqlite
+    ? Object.entries(sqlite.sessions || {}).map(([provider, count]) => `${esc(provider)}: ${count}`).join(" · ") || "—"
+    : esc(t("tools.codexNoDb"));
+  const sqliteArchived = sqlite
+    ? Object.entries(sqlite.archived_sessions || {}).map(([provider, count]) => `${esc(provider)}: ${count}`).join(" · ") || "—"
+    : esc(t("tools.codexNoDb"));
+  const rolloutSessions = Object.entries(status.rollout_counts?.sessions || {}).map(([provider, count]) => `${esc(provider)}: ${count}`).join(" · ") || "—";
+  const rolloutArchived = Object.entries(status.rollout_counts?.archived_sessions || {}).map(([provider, count]) => `${esc(provider)}: ${count}`).join(" · ") || "—";
+
+  return `
+    <div class="kv"><span>${esc(t("tools.codexHome"))}</span><code>${esc(status.codex_home)}</code></div>
+    <div class="kv"><span>${esc(t("tools.codexCurrentProvider"))}</span><code>${esc(status.current_provider)}${status.current_provider_implicit ? ` <span class="muted">(${esc(t("tools.codexImplicit"))})</span>` : ""}</code></div>
+    <div class="kv"><span>${esc(t("tools.codexRollout"))} · sessions</span><span>${rolloutSessions}</span></div>
+    <div class="kv"><span>${esc(t("tools.codexRollout"))} · archived</span><span>${rolloutArchived}</span></div>
+    <div class="kv"><span>${esc(t("tools.codexSqlite"))} · sessions</span><span>${sqliteSessions}</span></div>
+    <div class="kv"><span>${esc(t("tools.codexSqlite"))} · archived</span><span>${sqliteArchived}</span></div>
+    <div class="kv"><span>${esc(t("tools.codexBackupSummary"))}</span><span>${status.backup_summary.count} · ${formatBytes(status.backup_summary.total_bytes)}</span></div>`;
+}
+
+function renderCodexProviders() {
+  const status = codexStatus;
+  const providers = status?.configured_providers || [];
+  const current = status?.current_provider || "";
+  if (!providers.length) {
+    els.codexProviderSelect.innerHTML = `<option value="">${esc(t("tools.codexUnknown"))}</option>`;
+    return;
+  }
+  els.codexProviderSelect.innerHTML = providers
+    .map((provider) => `<option value="${esc(provider)}" ${provider === current ? "selected" : ""}>${esc(provider)}</option>`)
+    .join("");
+}
+
+function renderCodexBackups() {
+  const rows = (codexBackups || [])
+    .map(
+      (backup) => `
+        <tr>
+          <td class="mono">${esc(backup.name)}</td>
+          <td>${formatBytes(backup.size)}</td>
+          <td class="actions-cell">
+            <button class="mini" data-action="codex-restore" data-path="${esc(backup.path)}">${esc(t("tools.codexRestore"))}</button>
+          </td>
+        </tr>`,
+    )
+    .join("");
+  els.codexBackupRows.innerHTML = rows;
+  els.codexBackupEmpty.hidden = (codexBackups || []).length > 0;
+}
+
+function renderCodex() {
+  renderCodexProviders();
+  els.codexOverview.innerHTML = codexStatus
+    ? codexOverviewHtml(codexStatus)
+    : `<span class="muted">${esc(t("common.routerUnavailable"))}</span>`;
+  renderCodexBackups();
+}
+
+async function loadCodex() {
+  try {
+    const [statusRes, backupRes] = await Promise.all([
+      fetch(`${baseUrl}/api/codex/status`),
+      fetch(`${baseUrl}/api/codex/backups`),
+    ]);
+    if (!statusRes.ok) {
+      const data = await statusRes.json().catch(() => ({}));
+      throw new Error(data.error || statusRes.status);
+    }
+    codexStatus = await statusRes.json();
+    const backupData = backupRes.ok ? await backupRes.json() : { backups: [] };
+    codexBackups = backupData.backups || [];
+    els.codexState.textContent = "";
+  } catch (error) {
+    codexStatus = null;
+    codexBackups = [];
+    els.codexState.textContent = t("tools.codexSyncFailed", { error: error.message });
+  }
+  renderCodex();
+}
+
+function openTerminal(title) {
+  if (title) els.terminalTitle.textContent = title;
+  els.terminalOutput.textContent = "";
+  els.terminalOverlay.classList.remove("hidden");
+}
+
+function appendTerminalLine(line) {
+  els.terminalOutput.textContent +=
+    (els.terminalOutput.textContent ? "\n" : "") + line;
+  els.terminalOutput.scrollTop = els.terminalOutput.scrollHeight;
+}
+
+function stopTerminalStream() {
+  terminalEventSource?.close();
+  terminalEventSource = null;
+}
+
+function closeTerminal() {
+  stopTerminalStream();
+  els.terminalOverlay.classList.add("hidden");
+}
+
+function streamCommand(url, { onResult, onFail, onError } = {}) {
+  stopTerminalStream();
+  terminalEventSource = new EventSource(url);
+  terminalEventSource.addEventListener("progress", (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.line) appendTerminalLine(data.line);
+    } catch {
+      // Ignore malformed progress frames.
+    }
+  });
+  terminalEventSource.addEventListener("failed", (event) => {
+    let message = "";
+    try {
+      message = JSON.parse(event.data).error || "";
+    } catch {
+      // Keep the empty message.
+    }
+    if (onFail) onFail(message);
+    else if (message) appendTerminalLine(message);
+    stopTerminalStream();
+  });
+  terminalEventSource.addEventListener("result", async (event) => {
+    stopTerminalStream();
+    if (onResult) await onResult(event);
+  });
+  terminalEventSource.onerror = () => {
+    stopTerminalStream();
+    if (onError) onError();
+  };
+}
+
+function runCodexSync() {
+  if (codexBusy) return;
+  codexBusy = true;
+  const provider = els.codexProviderSelect.value || "";
+  const current = codexStatus?.current_provider || "";
+  const keep = parseInt(els.codexKeepInput.value || "5", 10);
+  const restorePinned = els.codexRestorePinned.checked;
+  const useSwitch = Boolean(provider && provider !== current);
+
+  const params = new URLSearchParams({
+    keep_count: String(keep),
+    restore_pinned_projects: restorePinned ? "1" : "0",
+    switch: useSwitch ? "1" : "0",
+  });
+  if (provider) params.set("provider", provider);
+
+  openTerminal(t("tools.codexConsoleTitle"));
+  streamCommand(`${baseUrl}/api/codex/sync/events?${params.toString()}`, {
+    onFail: () => {
+      codexBusy = false;
+    },
+    onResult: async () => {
+      codexBusy = false;
+      await loadCodex();
+    },
+    onError: () => {
+      codexBusy = false;
+    },
+  });
+}
+
+async function runCodexPrune() {
+  const keep = parseInt(els.codexKeepInput.value || "5", 10);
+  els.codexState.textContent = t("tools.codexPruning");
+  try {
+    const res = await fetch(`${baseUrl}/api/codex/prune`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep_count: keep }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.status);
+    els.codexState.textContent = t("tools.codexPruned");
+    toast(t("tools.codexPruned"));
+  } catch (error) {
+    els.codexState.textContent = t("tools.codexPruneFailed", { error: error.message });
+    toast(t("tools.codexPruneFailed", { error: error.message }));
+  } finally {
+    await loadCodex();
+  }
+}
+
+async function restoreCodexBackup(path) {
+  if (!path || codexBusy) return;
+  codexBusy = true;
+  els.codexState.textContent = t("tools.codexRestoring");
+  try {
+    const res = await fetch(`${baseUrl}/api/codex/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backup_dir: path }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.status);
+    els.codexState.textContent = t("tools.codexRestored");
+    toast(t("tools.codexRestored"));
+  } catch (error) {
+    els.codexState.textContent = t("tools.codexRestoreFailed", { error: error.message });
+    toast(t("tools.codexRestoreFailed", { error: error.message }));
+  } finally {
+    codexBusy = false;
+    await loadCodex();
+  }
+}
+
 async function refresh() {
   const processStatus = await safeInvoke("router_status");
   renderProcess(processStatus);
@@ -480,22 +712,39 @@ function mappingChannelLabel(channelID) {
 
 function channelFormHtml(ch) {
   ch = ch || {};
+  const authType = ch.auth_type === "codex" || ch.codex_auth ? "codex" : "api_key";
+  const codexAuthInput = ch.codex_auth_input ?? codexAuthJSON(ch.codex_auth);
+  const baseURL = ch.base_url || (authType === "codex" ? "https://chatgpt.com/backend-api/codex" : "");
   return `
     <div class="form-section">
       <div class="form-section-title">${esc(t("channels.basic"))}</div>
       <label>${esc(t("columns.name"))}<input name="name" value="${esc(ch.name || "")}" placeholder="${esc(t("channels.namePlaceholder"))}"></label>
-      <label>Base URL *<input name="base_url" value="${esc(ch.base_url || "")}" placeholder="https://api.deepseek.com"></label>
-      <label>API Key<input name="api_key" value="${esc(ch.api_key || "")}" placeholder="sk-..."></label>
+      <label>${esc(t("channels.authType"))}
+        <select name="auth_type">
+          <option value="api_key" ${authType === "api_key" ? "selected" : ""}>${esc(t("channels.authApiKey"))}</option>
+          <option value="codex" ${authType === "codex" ? "selected" : ""}>${esc(t("channels.authCodex"))}</option>
+        </select>
+      </label>
+      <label>Base URL *<input name="base_url" value="${esc(baseURL)}" placeholder="https://api.deepseek.com"></label>
+      <div data-auth-panel="api_key" ${authType === "api_key" ? "" : "hidden"}>
+        <label>API Key<input name="api_key" value="${esc(ch.api_key || "")}" placeholder="sk-..."></label>
+      </div>
+      <div data-auth-panel="codex" ${authType === "codex" ? "" : "hidden"}>
+        <label>${esc(t("channels.codexJson"))}
+          <textarea name="codex_auth_input" rows="8" placeholder='{"tokens":{"access_token":"...","refresh_token":"..."}}'>${esc(codexAuthInput)}</textarea>
+          <small class="field-hint">${esc(t("channels.codexJsonHint"))}</small>
+        </label>
+      </div>
     </div>
     <div class="form-section">
       <div class="form-section-title">${esc(t("channels.models"))}</div>
       <div class="field">
         <div class="field-head">
           <span class="field-title">${esc(t("channels.availableModels"))}</span>
-          <button type="button" class="mini" data-action="fetch-models">${esc(t("actions.update"))}</button>
+          <button type="button" class="mini" data-action="fetch-models" ${authType === "codex" ? "hidden" : ""}>${esc(t("actions.update"))}</button>
         </div>
-        <textarea name="models" rows="4" placeholder="deepseek-chat">${esc((ch.models || []).join("\n"))}</textarea>
-        <small class="field-hint">${esc(t("channels.modelsHint"))}</small>
+        <textarea name="models" rows="4" placeholder="${authType === "codex" ? "*" : "deepseek-chat"}">${esc((ch.models || (authType === "codex" ? ["*"] : [])).join("\n"))}</textarea>
+        <small class="field-hint" data-models-hint>${esc(t(authType === "codex" ? "channels.codexModelsHint" : "channels.modelsHint"))}</small>
       </div>
     </div>
     <div class="form-section">
@@ -544,6 +793,7 @@ function openChannelForm(index) {
   modalId = index;
   els.modalTitle.textContent = t(ch ? "channels.edit" : "channels.add");
   els.modalBody.innerHTML = channelFormHtml(ch);
+  syncChannelAuthPanels();
   els.modal.classList.remove("hidden");
 }
 
@@ -574,7 +824,44 @@ function openTokenEditForm(id) {
   els.modal.classList.remove("hidden");
 }
 
-function collectChannelForm() {
+function codexAuthJSON(auth) {
+  if (!auth) return "";
+  return JSON.stringify({
+    tokens: {
+      access_token: auth.access_token || "",
+      refresh_token: auth.refresh_token || "",
+      id_token: auth.id_token || "",
+      account_id: auth.account_id || "",
+      expires_at: auth.expires_at || "",
+    },
+    email: auth.email || "",
+    user_id: auth.user_id || "",
+    client_id: auth.client_id || "",
+    updated_at: auth.updated_at || 0,
+  }, null, 2);
+}
+
+function syncChannelAuthPanels() {
+  if (modalType !== "channel") return;
+  const authType = els.modalBody.querySelector('[name="auth_type"]')?.value || "api_key";
+  els.modalBody.querySelectorAll("[data-auth-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.authPanel !== authType;
+  });
+  const fetchButton = els.modalBody.querySelector('[data-action="fetch-models"]');
+  if (fetchButton) fetchButton.hidden = authType === "codex";
+  const hint = els.modalBody.querySelector("[data-models-hint]");
+  if (hint) hint.textContent = t(authType === "codex" ? "channels.codexModelsHint" : "channels.modelsHint");
+  const baseField = els.modalBody.querySelector('[name="base_url"]');
+  if (authType === "codex" && baseField && !baseField.value.trim()) {
+    baseField.value = "https://chatgpt.com/backend-api/codex";
+  }
+  const modelsField = els.modalBody.querySelector('[name="models"]');
+  if (authType === "codex" && modelsField && !modelsField.value.trim()) {
+    modelsField.value = "*";
+  }
+}
+
+function collectChannelDraft() {
   const f = els.modalBody;
   const val = (name) => (f.querySelector(`[name="${name}"]`)?.value || "").trim();
   const models = val("models")
@@ -585,7 +872,10 @@ function collectChannelForm() {
     id: modalId >= 0 ? (config.channels[modalId]?.id || "") : "",
     name: val("name"),
     base_url: val("base_url"),
+    auth_type: val("auth_type") || "api_key",
     api_key: val("api_key"),
+    codex_auth: modalId >= 0 ? config.channels[modalId]?.codex_auth : undefined,
+    codex_auth_input: val("codex_auth_input"),
     models,
     model_mappings: modalId >= 0 ? (config.channels[modalId]?.model_mappings || {}) : {},
     priority: parseInt(val("priority") || "0", 10),
@@ -593,6 +883,39 @@ function collectChannelForm() {
     max_retries: parseInt(val("max_retries") || "0", 10),
     enabled: f.querySelector('[name="enabled"]').checked,
   };
+}
+
+async function collectChannelForm() {
+  const ch = collectChannelDraft();
+  if (ch.auth_type === "codex") {
+    if (!ch.codex_auth_input) {
+      toast(t("channels.codexJsonRequired"));
+      return null;
+    }
+    try {
+      const res = await fetch(`${baseUrl}/api/parse_codex_auth`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: ch.codex_auth_input }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(t("channels.codexJsonInvalid", { error: data.error || res.status }));
+        return null;
+      }
+      ch.codex_auth = data.auth;
+      ch.api_key = "";
+      ch.base_url ||= "https://chatgpt.com/backend-api/codex";
+      if (!ch.models.length) ch.models = ["*"];
+    } catch {
+      toast(t("channels.codexJsonInvalid", { error: t("common.routerUnavailable") }));
+      return null;
+    }
+  } else {
+    delete ch.codex_auth;
+  }
+  delete ch.codex_auth_input;
+  return ch;
 }
 
 function collectMappingForm() {
@@ -606,6 +929,9 @@ function collectMappingForm() {
 }
 
 async function fetchModelsFromForm() {
+  if ((els.modalBody.querySelector('[name="auth_type"]')?.value || "api_key") === "codex") {
+    return;
+  }
   const base = (els.modalBody.querySelector('[name="base_url"]')?.value || "").trim();
   const apiKey = (els.modalBody.querySelector('[name="api_key"]')?.value || "").trim();
   const modelsField = els.modalBody.querySelector('[name="models"]');
@@ -634,7 +960,8 @@ async function fetchModelsFromForm() {
 
 async function saveModal() {
   if (modalType === "channel") {
-    const ch = collectChannelForm();
+    const ch = await collectChannelForm();
+    if (!ch) return;
     if (!ch.name || !ch.base_url) {
       toast(t("channels.required"));
       return;
@@ -734,6 +1061,7 @@ async function handleAction(action, target) {
   const index = Number(target.dataset.index);
   const id = target.dataset.id;
 
+  if (action === "codex-restore") return restoreCodexBackup(target.dataset.path);
   if (action === "edit-channel") return openChannelForm(index);
   if (action === "edit-mapping") return openMappingForm(index);
   if (action === "fetch-models") return fetchModelsFromForm();
@@ -849,11 +1177,14 @@ function switchTab(name) {
   } else {
     stopUsageUpdates();
   }
+  if (name === "tools") {
+    loadCodex();
+  }
 }
 
 function modalDraft() {
   if (els.modal.classList.contains("hidden")) return null;
-  if (modalType === "channel") return collectChannelForm();
+  if (modalType === "channel") return collectChannelDraft();
   if (modalType === "mapping") return collectMappingForm();
   if (modalType === "token" || modalType === "token-edit") return { name: els.modalBody.querySelector('[name="name"]')?.value || "" };
   return null;
@@ -867,6 +1198,7 @@ function renderLocaleChange(draft) {
   renderMappings();
   renderGroups();
   renderTokens();
+  renderCodex();
   if (lastUsageData) {
     const records = lastUsageData.records || [];
     els.usageSummary.innerHTML = usageSummaryHtml(lastUsageData.summary);
@@ -875,6 +1207,7 @@ function renderLocaleChange(draft) {
   if (modalType === "channel" && draft) {
     els.modalTitle.textContent = t(modalId >= 0 ? "channels.edit" : "channels.add");
     els.modalBody.innerHTML = channelFormHtml(draft);
+    syncChannelAuthPanels();
   } else if (modalType === "mapping" && draft) {
     els.modalTitle.textContent = t(modalId >= 0 ? "mappings.edit" : "mappings.add");
     els.modalBody.innerHTML = mappingFormHtml(draft);
@@ -914,6 +1247,17 @@ window.addEventListener("DOMContentLoaded", () => {
   els.lanBlock = document.querySelector("#lan-block");
   els.lanUrls = document.querySelector("#lan-urls");
   els.localeSelect = document.querySelector("#locale-select");
+  els.codexProviderSelect = document.querySelector("#codex-provider-select");
+  els.codexKeepInput = document.querySelector("#codex-keep-input");
+  els.codexRestorePinned = document.querySelector("#codex-restore-pinned");
+  els.codexState = document.querySelector("#codex-state");
+  els.codexOverview = document.querySelector("#codex-overview");
+  els.codexBackupRows = document.querySelector("#codex-backup-rows");
+  els.codexBackupEmpty = document.querySelector("#codex-backup-empty");
+  els.terminalOverlay = document.querySelector("#terminal-overlay");
+  els.terminalTitle = document.querySelector("#terminal-title");
+  els.terminalOutput = document.querySelector("#terminal-output");
+  els.terminalClose = document.querySelector("#terminal-close");
 
   els.localeSelect.value = getLocale();
   applyTranslations();
@@ -943,6 +1287,10 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#btn-add-mapping").addEventListener("click", () => openMappingForm(-1));
   document.querySelector("#btn-add-token").addEventListener("click", openTokenForm);
   document.querySelector("#btn-add-group").addEventListener("click", addGroup);
+  document.querySelector("#btn-codex-sync").addEventListener("click", runCodexSync);
+  document.querySelector("#btn-codex-status").addEventListener("click", loadCodex);
+  document.querySelector("#btn-codex-prune").addEventListener("click", runCodexPrune);
+  els.terminalClose.addEventListener("click", closeTerminal);
   document.querySelector("#modal-close").addEventListener("click", closeModal);
   document.querySelector("#modal-cancel").addEventListener("click", closeModal);
   document.querySelector("#modal-save").addEventListener("click", saveModal);
@@ -1000,6 +1348,10 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   document.addEventListener("change", (e) => {
+    if (e.target.matches('#modal-body [name="auth_type"]')) {
+      syncChannelAuthPanels();
+      return;
+    }
     const input = e.target.closest('[data-action="group-priority"]');
     if (input) updateGroupPriority(input);
   });

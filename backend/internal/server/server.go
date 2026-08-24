@@ -11,10 +11,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/minkicc/codex-sync"
 	"github.com/minkicc/mkswitch/backend/internal/config"
 	"github.com/minkicc/mkswitch/backend/internal/engine"
 	"github.com/minkicc/mkswitch/backend/internal/routing"
@@ -22,18 +25,66 @@ import (
 
 const maxRequestBody = 64 << 20
 
+const (
+	codexOAuthTokenURL  = "https://auth.openai.com/oauth/token"
+	codexRefreshSkew    = 3 * time.Minute
+	codexDefaultVersion = "0.146.0"
+	codexDefaultUA      = "codex-tui/" + codexDefaultVersion + " (Windows 11; x86_64) WindowsTerminal"
+)
+
 type Server struct {
-	engine  *engine.Engine
-	cfgPath string
-	ui      http.Handler
-	logger  *log.Logger
-	saveMu  sync.Mutex
-	usage   *usageStore
+	engine            *engine.Engine
+	cfgPath           string
+	ui                http.Handler
+	logger            *log.Logger
+	saveMu            sync.Mutex
+	usage             *usageStore
+	codex             *codex.Service
+	codexRefreshLocks sync.Map
 }
 
 type usageInfo struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
+}
+
+type codexContextLock struct {
+	token chan struct{}
+}
+
+func newCodexContextLock() *codexContextLock {
+	return &codexContextLock{token: make(chan struct{}, 1)}
+}
+
+func (m *codexContextLock) Lock(ctx context.Context) error {
+	select {
+	case m.token <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *codexContextLock) Unlock() {
+	<-m.token
+}
+
+type codex401RefreshStateKey struct{}
+
+type codex401RefreshState struct {
+	attempted map[string]bool
+}
+
+func beginCodex401Refresh(ctx context.Context, channelID string) bool {
+	state, _ := ctx.Value(codex401RefreshStateKey{}).(*codex401RefreshState)
+	if state == nil {
+		return true
+	}
+	if state.attempted[channelID] {
+		return false
+	}
+	state.attempted[channelID] = true
+	return true
 }
 
 func New(eng *engine.Engine, cfgPath string, uiFS fs.FS, logger *log.Logger) *Server {
@@ -50,7 +101,9 @@ func New(eng *engine.Engine, cfgPath string, uiFS fs.FS, logger *log.Logger) *Se
 		ui:      http.FileServerFS(uiFS),
 		logger:  logger,
 		usage:   newUsageStore(cfgPath, usageLimit),
+		codex:   &codex.Service{},
 	}
+	eng.SetCodexAuthResolver(s.ensureCodexAuth)
 	return s
 }
 
@@ -67,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/usage/events", s.handleUsageEvents)
 	mux.HandleFunc("PUT /api/config", s.handlePutConfig)
 	mux.HandleFunc("POST /api/probe_models", s.handleProbeModels)
+	mux.HandleFunc("POST /api/parse_codex_auth", s.handleParseCodexAuth)
 	mux.HandleFunc("GET /api/tokens", s.handleListTokens)
 	mux.HandleFunc("POST /api/tokens", s.handleCreateToken)
 	mux.HandleFunc("PUT /api/tokens/{id}", s.handleUpdateToken)
@@ -74,6 +128,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/reload", s.handleReload)
 	mux.HandleFunc("POST /api/check", s.handleCheckAll)
 	mux.HandleFunc("POST /api/check/{id}", s.handleCheckOne)
+	mux.HandleFunc("GET /api/codex/status", s.handleCodexStatus)
+	mux.HandleFunc("POST /api/codex/sync", s.handleCodexSync)
+	mux.HandleFunc("POST /api/codex/switch", s.handleCodexSwitch)
+	mux.HandleFunc("POST /api/codex/restore", s.handleCodexRestore)
+	mux.HandleFunc("POST /api/codex/prune", s.handleCodexPrune)
+	mux.HandleFunc("GET /api/codex/backups", s.handleCodexBackups)
+	mux.HandleFunc("GET /api/codex/sync/events", s.handleCodexSyncEvents)
 	mux.Handle("/", s.ui)
 	return corsMiddleware(mux)
 }
@@ -157,6 +218,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordRequest(tokenID)
+	r = r.WithContext(context.WithValue(r.Context(), codex401RefreshStateKey{}, &codex401RefreshState{
+		attempted: map[string]bool{},
+	}))
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	if err != nil {
@@ -287,11 +351,17 @@ func (s *Server) recordUsage(r *http.Request, tokenID, model string, selection *
 
 func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engine.Selection, body []byte) (bool, usageInfo, error) {
 	ch := selection.Channel
+	if ch.IsCodexAuth() && r.URL.Path != "/v1/responses" {
+		return true, usageInfo{}, &retryDecisionError{
+			err:  fmt.Errorf("Codex JSON channels only support /v1/responses"),
+			same: false,
+		}
+	}
 	rewritten, stream, err := rewriteRequestBody(body, selection.UpstreamModel)
 	if err != nil {
 		return true, usageInfo{}, &retryDecisionError{err: err, same: false}
 	}
-	target := engine.BuildURL(ch.BaseURL, r.URL.Path)
+	target := upstreamTarget(ch, r.URL.Path)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(rewritten))
 	if err != nil {
 		return true, usageInfo{}, &retryDecisionError{err: err, same: false}
@@ -302,6 +372,15 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 	}
 	for k, v := range ch.Headers {
 		req.Header.Set(k, v)
+	}
+	var requestCodexAuth *config.CodexAuth
+	if ch.IsCodexAuth() {
+		auth, authErr := s.ensureCodexAuth(r.Context(), ch.ID)
+		if authErr != nil {
+			return true, usageInfo{}, &retryDecisionError{err: authErr, same: false}
+		}
+		requestCodexAuth = auth
+		applyCodexRequestHeaders(req.Header, r.Header, auth, stream)
 	}
 	start := time.Now()
 	resp, err := s.engine.ProxyClient().Do(req)
@@ -316,6 +395,35 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 	latency := time.Since(start)
 
 	if routing.IsRetryableError(resp.StatusCode, nil) {
+		if ch.IsCodexAuth() && resp.StatusCode == http.StatusUnauthorized {
+			responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			if code, permanent := codexPermanentAuthFailure(responseBody); permanent {
+				s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, latency)
+				return true, usageInfo{}, &retryDecisionError{
+					err:  fmt.Errorf("Codex authorization was permanently rejected: %s", code),
+					same: false,
+				}
+			}
+			if requestCodexAuth != nil && beginCodex401Refresh(r.Context(), ch.ID) {
+				if _, refreshErr := s.ensureCodexAuthAfterUnauthorized(r.Context(), ch.ID, requestCodexAuth.AccessToken); refreshErr == nil {
+					return true, usageInfo{}, &retryDecisionError{
+						err:  errors.New("Codex authorization refreshed after upstream 401"),
+						same: true,
+					}
+				} else {
+					s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, latency)
+					return true, usageInfo{}, &retryDecisionError{
+						err:  fmt.Errorf("Codex authorization refresh after 401 failed: %w", refreshErr),
+						same: false,
+					}
+				}
+			}
+			s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, latency)
+			return true, usageInfo{}, &retryDecisionError{
+				err:  errors.New("Codex authorization remained unauthorized after one refresh attempt"),
+				same: false,
+			}
+		}
 		retryErr := &retryDecisionError{
 			err:  fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode)),
 			same: routing.IsRetryableOnSameRoute(resp.StatusCode),
@@ -644,10 +752,13 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	// Tokens are managed through dedicated endpoints; keep the live set on save.
 	current := s.engine.Config()
 	cfg.Tokens = current.Tokens
 	cfg.AuthToken = current.AuthToken
+	preserveNewerCodexAuthorizations(&cfg, current)
 	if err := s.engine.ReplaceConfig(&cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -659,12 +770,41 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func preserveNewerCodexAuthorizations(incoming, current *config.Config) {
+	if incoming == nil || current == nil {
+		return
+	}
+	currentByID := make(map[string]*config.CodexAuth, len(current.Channels))
+	for i := range current.Channels {
+		ch := &current.Channels[i]
+		if ch.IsCodexAuth() && ch.CodexAuth != nil {
+			currentByID[ch.ID] = ch.CodexAuth
+		}
+	}
+	for i := range incoming.Channels {
+		ch := &incoming.Channels[i]
+		if !ch.IsCodexAuth() || ch.CodexAuth == nil {
+			continue
+		}
+		live := currentByID[ch.ID]
+		if live == nil {
+			continue
+		}
+		if live.UpdatedAt > ch.CodexAuth.UpdatedAt {
+			latest := *live
+			ch.CodexAuth = &latest
+		}
+	}
+}
+
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.Load(s.cfgPath)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	if err := s.engine.ReplaceConfig(cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -685,6 +825,171 @@ func (s *Server) handleCheckOne(w http.ResponseWriter, r *http.Request) {
 	}
 	s.engine.CheckNow(id)
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+}
+
+func codexHomeFromRequest(r *http.Request) string {
+	if value := strings.TrimSpace(r.URL.Query().Get("codex_home")); value != "" {
+		return value
+	}
+	return ""
+}
+
+func (s *Server) handleCodexStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := s.codex.Status(codexHomeFromRequest(r))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleCodexSync(w http.ResponseWriter, r *http.Request) {
+	var req codex.SyncRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	result, err := s.codex.Sync(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleCodexSwitch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider              string `json:"provider"`
+		CodexHome             string `json:"codex_home"`
+		KeepCount             int    `json:"keep_count"`
+		RestorePinnedProjects bool   `json:"restore_pinned_projects"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	result, err := s.codex.Switch(req.Provider, req.CodexHome, req.KeepCount, req.RestorePinnedProjects)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleCodexRestore(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BackupDir string `json:"backup_dir"`
+		CodexHome string `json:"codex_home"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	result, err := s.codex.Restore(req.BackupDir, req.CodexHome)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleCodexPrune(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CodexHome string `json:"codex_home"`
+		KeepCount int    `json:"keep_count"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	result, err := s.codex.Prune(req.CodexHome, req.KeepCount)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleCodexBackups(w http.ResponseWriter, r *http.Request) {
+	backups, err := s.codex.ListBackups(codexHomeFromRequest(r))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"backups": backups})
+}
+
+func (s *Server) handleCodexSyncEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	writeEvent := func(event, data string) {
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+
+	query := r.URL.Query()
+	provider := strings.TrimSpace(query.Get("provider"))
+	codexHome := strings.TrimSpace(query.Get("codex_home"))
+	doSwitch := query.Get("switch") == "1" || query.Get("switch") == "true"
+	restorePinned := query.Get("restore_pinned_projects") == "1" || query.Get("restore_pinned_projects") == "true"
+
+	keep := 0
+	var keepPtr *int
+	if raw := strings.TrimSpace(query.Get("keep_count")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			payload, _ := json.Marshal(map[string]string{"error": "invalid keep_count"})
+			writeEvent("failed", string(payload))
+			return
+		}
+		keep = parsed
+		keepPtr = &parsed
+	}
+
+	progress := func(line string) {
+		payload, _ := json.Marshal(map[string]string{"line": line})
+		writeEvent("progress", string(payload))
+	}
+
+	var result codex.SyncResult
+	var err error
+	if doSwitch {
+		result, err = s.codex.SwitchWithProgress(provider, codexHome, keep, restorePinned, progress)
+	} else {
+		result, err = s.codex.SyncWithProgress(codex.SyncRequest{
+			Provider:              provider,
+			KeepCount:             keepPtr,
+			RestorePinnedProjects: restorePinned,
+			CodexHome:             codexHome,
+		}, progress)
+	}
+	if err != nil {
+		payload, _ := json.Marshal(map[string]string{"error": err.Error()})
+		writeEvent("failed", string(payload))
+		return
+	}
+
+	label := "Synchronized"
+	if doSwitch {
+		label = "Switched to"
+	}
+	for _, line := range codex.SummaryLines(result, label) {
+		progress(line)
+	}
+
+	payload, _ := json.Marshal(result)
+	writeEvent("result", string(payload))
 }
 
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
@@ -711,6 +1016,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	t, err := s.engine.AddToken(req.Name)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -733,6 +1040,8 @@ func (s *Server) handleUpdateToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	t, ok := s.engine.UpdateToken(id, req.Name, req.Enabled)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "token not found"})
@@ -747,6 +1056,8 @@ func (s *Server) handleUpdateToken(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	if !s.engine.RemoveToken(id) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "token not found"})
 		return
@@ -778,6 +1089,434 @@ func (s *Server) handleProbeModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+func (s *Server) handleParseCodexAuth(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	auth, err := config.ParseCodexAuthJSON(req.Content)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"auth": auth})
+}
+
+func upstreamTarget(ch config.Channel, path string) string {
+	if !ch.IsCodexAuth() {
+		return engine.BuildURL(ch.BaseURL, path)
+	}
+	base := strings.TrimRight(strings.TrimSpace(ch.BaseURL), "/")
+	if strings.HasSuffix(strings.ToLower(base), "/responses") {
+		return base
+	}
+	return base + "/responses"
+}
+
+func applyCodexRequestHeaders(dst, src http.Header, auth *config.CodexAuth, stream bool) {
+	if dst == nil || auth == nil {
+		return
+	}
+	for _, key := range []string{
+		"Accept-Language",
+		"Conversation-Id",
+		"Session-Id",
+		"X-Codex-Beta-Features",
+		"X-Codex-Installation-Id",
+		"X-Codex-Turn-State",
+		"X-Codex-Turn-Metadata",
+		"X-Codex-Window-Id",
+	} {
+		if value := strings.TrimSpace(src.Get(key)); value != "" {
+			dst.Set(key, value)
+		}
+	}
+	userAgent := strings.TrimSpace(src.Get("User-Agent"))
+	if userAgent == "" {
+		userAgent = codexDefaultUA
+	}
+	originator := strings.TrimSpace(src.Get("Originator"))
+	if originator == "" {
+		originator = codexOriginatorFromUA(userAgent)
+	}
+	version := strings.TrimSpace(src.Get("Version"))
+	if version == "" {
+		version = codexVersionFromUA(userAgent)
+	}
+	dst.Set("Authorization", "Bearer "+auth.AccessToken)
+	dst.Set("User-Agent", userAgent)
+	dst.Set("Originator", originator)
+	dst.Set("Version", version)
+	dst.Del("OpenAI-Beta")
+	if auth.AccountID != "" {
+		dst.Set("ChatGPT-Account-ID", auth.AccountID)
+	}
+	if stream {
+		dst.Set("Accept", "text/event-stream")
+	} else {
+		dst.Set("Accept", "application/json")
+	}
+}
+
+func codexOriginatorFromUA(userAgent string) string {
+	client := strings.TrimSpace(strings.SplitN(userAgent, "/", 2)[0])
+	if strings.HasPrefix(strings.ToLower(client), "codex") {
+		return client
+	}
+	return "codex-tui"
+}
+
+func codexVersionFromUA(userAgent string) string {
+	parts := strings.SplitN(strings.TrimSpace(userAgent), "/", 2)
+	if len(parts) != 2 {
+		return codexDefaultVersion
+	}
+	version := strings.Fields(parts[1])
+	if len(version) == 0 || strings.TrimSpace(version[0]) == "" {
+		return codexDefaultVersion
+	}
+	return version[0]
+}
+
+func (s *Server) ensureCodexAuth(ctx context.Context, channelID string) (*config.CodexAuth, error) {
+	return s.ensureCodexAuthCurrent(ctx, channelID, "", false)
+}
+
+func (s *Server) ensureCodexAuthAfterUnauthorized(ctx context.Context, channelID, rejectedAccessToken string) (*config.CodexAuth, error) {
+	return s.ensureCodexAuthCurrent(ctx, channelID, rejectedAccessToken, true)
+}
+
+func (s *Server) codexRefreshLock(channelID string) *codexContextLock {
+	actual, _ := s.codexRefreshLocks.LoadOrStore(channelID, newCodexContextLock())
+	lock, ok := actual.(*codexContextLock)
+	if !ok {
+		lock = newCodexContextLock()
+		s.codexRefreshLocks.Store(channelID, lock)
+	}
+	return lock
+}
+
+func (s *Server) ensureCodexAuthCurrent(ctx context.Context, channelID, rejectedAccessToken string, forceRefresh bool) (*config.CodexAuth, error) {
+	refreshLock := s.codexRefreshLock(channelID)
+	if err := refreshLock.Lock(ctx); err != nil {
+		return nil, fmt.Errorf("wait for Codex authorization refresh: %w", err)
+	}
+	defer refreshLock.Unlock()
+
+	cfg := s.engine.Config()
+	_, auth, err := codexAuthFromConfig(cfg, channelID)
+	if err != nil {
+		return nil, err
+	}
+	if forceRefresh && rejectedAccessToken != "" && auth.AccessToken != "" && auth.AccessToken != rejectedAccessToken {
+		// Another request already refreshed this channel while the current
+		// request was waiting for the per-channel lock.
+		return auth, nil
+	}
+	expiresAt, hasExpiry := auth.ExpiresAtTime()
+	if !forceRefresh && auth.AccessToken != "" && (!hasExpiry || time.Until(expiresAt) > codexRefreshSkew) {
+		return auth, nil
+	}
+	if auth.RefreshToken == "" {
+		if auth.AccessToken != "" && (!hasExpiry || time.Now().Before(expiresAt)) {
+			return auth, nil
+		}
+		return nil, errors.New("Codex access_token expired and refresh_token is missing")
+	}
+
+	attempted := *auth
+	refreshed, err := s.refreshCodexAuth(ctx, auth)
+	if err != nil {
+		if isCodexRefreshTokenRejected(err) {
+			latestCfg := s.engine.Config()
+			_, latest, latestErr := codexAuthFromConfig(latestCfg, channelID)
+			if latestErr == nil && codexCredentialsChanged(latest, &attempted) {
+				return latest, nil
+			}
+		}
+		if !forceRefresh && auth.AccessToken != "" && (!hasExpiry || time.Now().Before(expiresAt)) {
+			// Match sub2api's OpenAI policy: a proactive refresh failure may
+			// temporarily fall back only while the existing access token is
+			// still valid. Forced 401 recovery never falls back.
+			return auth, nil
+		}
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		// Do not persist provider credentials returned after the request
+		// boundary has been canceled.
+		return nil, err
+	}
+
+	s.saveMu.Lock()
+	latestCfg := s.engine.Config()
+	index, latest, latestErr := codexAuthFromConfig(latestCfg, channelID)
+	if latestErr != nil {
+		s.saveMu.Unlock()
+		return nil, latestErr
+	}
+	if codexCredentialsChanged(latest, &attempted) {
+		// A manual re-import or another credential writer won while the
+		// provider request was in flight. Never overwrite the newer token set.
+		s.saveMu.Unlock()
+		return latest, nil
+	}
+	latestCfg.Channels[index].CodexAuth = refreshed
+	if err := s.engine.ReplaceConfig(latestCfg); err != nil {
+		s.saveMu.Unlock()
+		return nil, err
+	}
+	saveErr := s.saveCodexRefreshLocked(ctx)
+	s.saveMu.Unlock()
+	if saveErr != nil {
+		// The provider may already have rotated the refresh token. Keep the
+		// refreshed in-memory credentials usable and report the durability
+		// problem in logs instead of rolling back to a consumed token.
+		if s.logger != nil {
+			s.logger.Printf("persist refreshed Codex authorization for channel %s: %v", channelID, saveErr)
+		}
+	}
+	return refreshed, nil
+}
+
+func codexAuthFromConfig(cfg *config.Config, channelID string) (int, *config.CodexAuth, error) {
+	if cfg == nil {
+		return -1, nil, errors.New("Codex configuration is unavailable")
+	}
+	for i := range cfg.Channels {
+		ch := &cfg.Channels[i]
+		if ch.ID != channelID {
+			continue
+		}
+		if !ch.IsCodexAuth() || ch.CodexAuth == nil {
+			return -1, nil, errors.New("Codex channel authorization is missing")
+		}
+		auth := *ch.CodexAuth
+		auth.Normalize()
+		return i, &auth, nil
+	}
+	return -1, nil, errors.New("Codex channel not found")
+}
+
+func codexCredentialsChanged(current, attempted *config.CodexAuth) bool {
+	if current == nil || attempted == nil {
+		return current != attempted
+	}
+	return current.AccessToken != attempted.AccessToken ||
+		current.RefreshToken != attempted.RefreshToken ||
+		current.IDToken != attempted.IDToken ||
+		current.UpdatedAt != attempted.UpdatedAt
+}
+
+func (s *Server) saveCodexRefreshLocked(ctx context.Context) error {
+	if strings.TrimSpace(s.cfgPath) == "" {
+		return nil
+	}
+	var lastErr error
+	for attempt, delay := range []time.Duration{0, 25 * time.Millisecond, 100 * time.Millisecond} {
+		if attempt > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		if err := s.engine.Config().Save(s.cfgPath); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+type codexOAuthRefreshError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *codexOAuthRefreshError) Error() string {
+	if e == nil {
+		return "Codex OAuth refresh failed"
+	}
+	detail := strings.TrimSpace(e.Code)
+	if detail == "" {
+		detail = strings.TrimSpace(e.Message)
+	}
+	if detail == "" {
+		detail = http.StatusText(e.StatusCode)
+	}
+	return fmt.Sprintf("Codex OAuth refresh returned status %d: %s", e.StatusCode, detail)
+}
+
+func isCodexRefreshTokenRejected(err error) bool {
+	var refreshErr *codexOAuthRefreshError
+	if errors.As(err, &refreshErr) {
+		switch strings.ToLower(strings.TrimSpace(refreshErr.Code)) {
+		case "invalid_grant", "invalid_refresh_token", "token_expired",
+			"refresh_token_reused", "refresh_token_invalidated",
+			"app_session_terminated", "invalid_client":
+			return true
+		}
+	}
+	text := strings.ToLower(errorText(err))
+	for _, marker := range []string{
+		"invalid_grant",
+		"invalid_refresh_token",
+		"token_expired",
+		"refresh_token_reused",
+		"refresh_token_invalidated",
+		"app_session_terminated",
+		"invalid_client",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexPermanentAuthFailure(body []byte) (string, bool) {
+	code, _, detail := codexErrorDetails(body)
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "token_invalidated", "token_revoked":
+		return code, true
+	}
+	if strings.EqualFold(strings.TrimSpace(detail), "Unauthorized") {
+		return "unauthorized", true
+	}
+	return "", false
+}
+
+func codexErrorDetails(body []byte) (code, message, detail string) {
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return "", "", ""
+	}
+	if rawError, ok := payload["error"].(map[string]any); ok {
+		code = jsonString(rawError["code"])
+		message = jsonString(rawError["message"])
+	} else if rawError, ok := payload["error"].(string); ok {
+		code = strings.TrimSpace(rawError)
+	}
+	switch rawDetail := payload["detail"].(type) {
+	case string:
+		detail = strings.TrimSpace(rawDetail)
+	case map[string]any:
+		if code == "" {
+			code = jsonString(rawDetail["code"])
+		}
+		if message == "" {
+			message = jsonString(rawDetail["message"])
+		}
+	}
+	if code == "" {
+		code = jsonString(payload["code"])
+	}
+	if message == "" {
+		message = jsonString(payload["message"])
+	}
+	if message == "" {
+		message = jsonString(payload["error_description"])
+	}
+	return code, message, detail
+}
+
+func jsonString(value any) string {
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
+}
+
+func (s *Server) refreshCodexAuth(ctx context.Context, current *config.CodexAuth) (*config.CodexAuth, error) {
+	clientID := strings.TrimSpace(current.ClientID)
+	if clientID == "" {
+		clientID = config.CodexClientID
+	}
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", current.RefreshToken)
+	form.Set("client_id", clientID)
+	form.Set("scope", "openid profile email")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexOAuthTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", codexDefaultUA)
+	req.Header.Set("Originator", "codex-tui")
+
+	resp, err := s.engine.ProxyClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("refresh Codex authorization: %w", err)
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if readErr != nil {
+		return nil, fmt.Errorf("read Codex refresh response: %w", readErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		code, message, detail := codexErrorDetails(body)
+		if message == "" {
+			message = detail
+		}
+		return nil, &codexOAuthRefreshError{
+			StatusCode: resp.StatusCode,
+			Code:       code,
+			Message:    message,
+		}
+	}
+	var token struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &token); err != nil {
+		return nil, fmt.Errorf("parse Codex refresh response: %w", err)
+	}
+	if strings.TrimSpace(token.AccessToken) == "" {
+		return nil, errors.New("Codex refresh response is missing access_token")
+	}
+	next := *current
+	next.AccessToken = token.AccessToken
+	if strings.TrimSpace(token.RefreshToken) != "" {
+		next.RefreshToken = token.RefreshToken
+	}
+	if strings.TrimSpace(token.IDToken) != "" {
+		next.IDToken = token.IDToken
+	}
+	next.ClientID = clientID
+	identity := &config.CodexAuth{
+		AccessToken: token.AccessToken,
+		IDToken:     token.IDToken,
+	}
+	identity.Normalize()
+	if identity.AccountID != "" {
+		next.AccountID = identity.AccountID
+	}
+	if identity.UserID != "" {
+		next.UserID = identity.UserID
+	}
+	if identity.Email != "" {
+		next.Email = identity.Email
+	}
+	if token.ExpiresIn > 0 {
+		next.ExpiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+	} else {
+		next.ExpiresAt = identity.ExpiresAt
+	}
+	next.UpdatedAt = time.Now().UnixMilli()
+	next.Normalize()
+	return &next, nil
 }
 
 func (s *Server) fetchUpstreamModels(baseURL, apiKey string) ([]string, error) {

@@ -1,12 +1,22 @@
 package engine
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/minkicc/mkswitch/backend/internal/config"
 	"github.com/minkicc/mkswitch/backend/internal/routing"
 )
+
+type engineRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn engineRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
 
 func boolPtr(v bool) *bool { return &v }
 
@@ -169,5 +179,54 @@ func TestBuildURL(t *testing.T) {
 		if got != c.want {
 			t.Errorf("BuildURL(%q, %q) = %q, want %q", c.base, c.path, got, c.want)
 		}
+	}
+}
+
+func TestCodexHealthProbeUsesSharedAuthorizationResolver(t *testing.T) {
+	ch := config.Channel{
+		ID:       "#1",
+		BaseURL:  config.CodexBaseURL,
+		AuthType: config.ChannelAuthCodex,
+		CodexAuth: &config.CodexAuth{
+			AccessToken: "stale-access",
+			AccountID:   "account-1",
+		},
+		Models: []string{"*"},
+	}
+	eng, err := New(testConfig(ch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolverCalls := 0
+	eng.SetCodexAuthResolver(func(ctx context.Context, channelID string) (*config.CodexAuth, error) {
+		resolverCalls++
+		if channelID != "#1" {
+			t.Fatalf("channel id = %q", channelID)
+		}
+		return &config.CodexAuth{
+			AccessToken: "fresh-access",
+			AccountID:   "account-1",
+		}, nil
+	})
+	eng.healthClient.Transport = engineRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://chatgpt.com/backend-api/codex/models" {
+			t.Fatalf("target = %s", req.URL)
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer fresh-access" {
+			t.Fatalf("authorization = %q", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})
+
+	status, _, err := eng.probe(ch, "/v1/models", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK || resolverCalls != 1 {
+		t.Fatalf("status = %d, resolver calls = %d", status, resolverCalls)
 	}
 }

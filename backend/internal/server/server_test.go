@@ -3,11 +3,14 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +85,467 @@ func TestForwardStreamsResponseImmediately(t *testing.T) {
 	}
 	if recorder.Body.Len() == 0 {
 		t.Fatal("stream body was not forwarded")
+	}
+}
+
+func TestForwardCodexJSONChannelUsesChatGPTResponsesHeaders(t *testing.T) {
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{
+		ID:       "#1",
+		Name:     "Codex",
+		BaseURL:  config.CodexBaseURL,
+		AuthType: config.ChannelAuthCodex,
+		CodexAuth: &config.CodexAuth{
+			AccessToken: "codex-access",
+			AccountID:   "account-1",
+			ExpiresAt:   time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+		Models: []string{"*"},
+	}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured *http.Request
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		captured = req.Clone(req.Context())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"id":"response-1","usage":{"input_tokens":1,"output_tokens":2}}`)),
+		}, nil
+	})
+	srv := &Server{engine: eng}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("User-Agent", "codex_cli_rs/0.200.0 (Windows 11; x86_64)")
+	req.Header.Set("Originator", "codex_cli_rs")
+	selection := &engine.Selection{Channel: cfg.Channels[0], UpstreamModel: "gpt-5.6-sol"}
+
+	retry, _, err := srv.forward(httptest.NewRecorder(), req, selection, []byte(`{"model":"gpt-5.6-sol"}`))
+	if retry || err != nil {
+		t.Fatalf("retry=%v err=%v", retry, err)
+	}
+	if captured == nil {
+		t.Fatal("upstream request was not captured")
+	}
+	if captured.URL.String() != "https://chatgpt.com/backend-api/codex/responses" {
+		t.Fatalf("target = %s", captured.URL)
+	}
+	if got := captured.Header.Get("Authorization"); got != "Bearer codex-access" {
+		t.Fatalf("authorization = %q", got)
+	}
+	if got := captured.Header.Get("ChatGPT-Account-ID"); got != "account-1" {
+		t.Fatalf("account header = %q", got)
+	}
+	if got := captured.Header.Get("Originator"); got != "codex_cli_rs" {
+		t.Fatalf("originator = %q", got)
+	}
+	if got := captured.Header.Get("Version"); got != "0.200.0" {
+		t.Fatalf("version = %q", got)
+	}
+}
+
+func TestEnsureCodexAuthRefreshesAndPersistsRotatedToken(t *testing.T) {
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{
+		ID:       "#1",
+		BaseURL:  config.CodexBaseURL,
+		AuthType: config.ChannelAuthCodex,
+		CodexAuth: &config.CodexAuth{
+			AccessToken:  "expired-access",
+			RefreshToken: "old-refresh",
+			AccountID:    "account-1",
+			ExpiresAt:    time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+		},
+		Models: []string{"*"},
+	}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != codexOAuthTokenURL {
+			t.Fatalf("refresh target = %s", req.URL)
+		}
+		if err := req.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if req.Form.Get("refresh_token") != "old-refresh" || req.Form.Get("client_id") != config.CodexClientID {
+			t.Fatalf("refresh form = %v", req.Form)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(bytes.NewBufferString(
+				`{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`,
+			)),
+		}, nil
+	})
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	srv := &Server{engine: eng, cfgPath: cfgPath}
+
+	auth, err := srv.ensureCodexAuth(context.Background(), "#1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.AccessToken != "new-access" || auth.RefreshToken != "new-refresh" {
+		t.Fatalf("refreshed auth = %+v", auth)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved config.Config
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if got := saved.Channels[0].CodexAuth.AccessToken; got != "new-access" {
+		t.Fatalf("saved access token = %q", got)
+	}
+}
+
+func TestHandleProxyRefreshesCodexAuthAfter401AndRetries(t *testing.T) {
+	cfg := config.Default()
+	cfg.NoAuth = true
+	cfg.Channels = []config.Channel{{
+		ID:         "#1",
+		BaseURL:    config.CodexBaseURL,
+		AuthType:   config.ChannelAuthCodex,
+		MaxRetries: 1,
+		CodexAuth: &config.CodexAuth{
+			AccessToken:  "stale-access",
+			RefreshToken: "refresh-1",
+			AccountID:    "account-1",
+			ExpiresAt:    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+		Models: []string{"*"},
+	}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseCalls := 0
+	refreshCalls := 0
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == codexOAuthTokenURL {
+			refreshCalls++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewBufferString(`{"access_token":"fresh-access","expires_in":3600}`)),
+			}, nil
+		}
+		responseCalls++
+		if responseCalls == 1 {
+			if got := req.Header.Get("Authorization"); got != "Bearer stale-access" {
+				t.Fatalf("first authorization = %q", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewBufferString(`{"error":{"message":"expired"}}`)),
+			}, nil
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer fresh-access" {
+			t.Fatalf("retry authorization = %q", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"id":"ok","usage":{"input_tokens":1,"output_tokens":1}}`)),
+		}, nil
+	})
+	srv := &Server{engine: eng, cfgPath: filepath.Join(t.TempDir(), "config.json")}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.6-sol"}`))
+
+	srv.handleProxy(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if responseCalls != 2 || refreshCalls != 1 {
+		t.Fatalf("response calls = %d, refresh calls = %d", responseCalls, refreshCalls)
+	}
+}
+
+func TestConcurrentCodex401RecoveryRefreshesOnlyOnce(t *testing.T) {
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{
+		ID:       "#1",
+		BaseURL:  config.CodexBaseURL,
+		AuthType: config.ChannelAuthCodex,
+		CodexAuth: &config.CodexAuth{
+			AccessToken:  "stale-access",
+			RefreshToken: "refresh-1",
+			ExpiresAt:    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			UpdatedAt:    1,
+		},
+		Models: []string{"*"},
+	}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	var once sync.Once
+	var callMu sync.Mutex
+	refreshCalls := 0
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		callMu.Lock()
+		refreshCalls++
+		callMu.Unlock()
+		once.Do(func() { close(refreshStarted) })
+		<-releaseRefresh
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"access_token":"fresh-access","refresh_token":"refresh-2","expires_in":3600}`)),
+		}, nil
+	})
+	srv := &Server{engine: eng}
+
+	type result struct {
+		auth *config.CodexAuth
+		err  error
+	}
+	results := make(chan result, 2)
+	go func() {
+		auth, err := srv.ensureCodexAuthAfterUnauthorized(context.Background(), "#1", "stale-access")
+		results <- result{auth: auth, err: err}
+	}()
+	<-refreshStarted
+	go func() {
+		auth, err := srv.ensureCodexAuthAfterUnauthorized(context.Background(), "#1", "stale-access")
+		results <- result{auth: auth, err: err}
+	}()
+	close(releaseRefresh)
+
+	for range 2 {
+		got := <-results
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.auth.AccessToken != "fresh-access" {
+			t.Fatalf("access token = %q", got.auth.AccessToken)
+		}
+	}
+	callMu.Lock()
+	defer callMu.Unlock()
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+}
+
+func TestCodexRefreshLockWaitHonorsContextCancellation(t *testing.T) {
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{
+		ID:       "#1",
+		BaseURL:  config.CodexBaseURL,
+		AuthType: config.ChannelAuthCodex,
+		CodexAuth: &config.CodexAuth{
+			AccessToken:  "stale-access",
+			RefreshToken: "refresh-1",
+			ExpiresAt:    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+		Models: []string{"*"},
+	}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	var once sync.Once
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		once.Do(func() { close(refreshStarted) })
+		<-releaseRefresh
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"access_token":"fresh-access","expires_in":3600}`)),
+		}, nil
+	})
+	srv := &Server{engine: eng}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := srv.ensureCodexAuthAfterUnauthorized(context.Background(), "#1", "stale-access")
+		firstDone <- err
+	}()
+	<-refreshStarted
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, waitErr := srv.ensureCodexAuthAfterUnauthorized(ctx, "#1", "stale-access")
+	if !errors.Is(waitErr, context.DeadlineExceeded) {
+		t.Fatalf("wait error = %v, want deadline exceeded", waitErr)
+	}
+	close(releaseRefresh)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCodexInvalidGrantRaceUsesNewerCredentials(t *testing.T) {
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{
+		ID:       "#1",
+		BaseURL:  config.CodexBaseURL,
+		AuthType: config.ChannelAuthCodex,
+		CodexAuth: &config.CodexAuth{
+			AccessToken:  "old-access",
+			RefreshToken: "old-refresh",
+			ExpiresAt:    time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+			UpdatedAt:    1,
+		},
+		Models: []string{"*"},
+	}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		latest := eng.Config()
+		latest.Channels[0].CodexAuth = &config.CodexAuth{
+			AccessToken:  "winner-access",
+			RefreshToken: "winner-refresh",
+			ExpiresAt:    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			UpdatedAt:    2,
+		}
+		if err := eng.ReplaceConfig(latest); err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"error":{"code":"invalid_grant","message":"refresh token already used"}}`)),
+		}, nil
+	})
+	srv := &Server{engine: eng}
+
+	auth, err := srv.ensureCodexAuth(context.Background(), "#1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.AccessToken != "winner-access" || auth.RefreshToken != "winner-refresh" {
+		t.Fatalf("race recovery auth = %+v", auth)
+	}
+}
+
+func TestPreserveNewerCodexAuthorizationFromStaleConfigSave(t *testing.T) {
+	current := config.Default()
+	current.Channels = []config.Channel{{
+		ID:       "#1",
+		AuthType: config.ChannelAuthCodex,
+		CodexAuth: &config.CodexAuth{
+			AccessToken:  "fresh-access",
+			RefreshToken: "fresh-refresh",
+			UpdatedAt:    200,
+		},
+	}}
+	incoming := current.Clone()
+	incoming.Channels[0].CodexAuth = &config.CodexAuth{
+		AccessToken:  "stale-access",
+		RefreshToken: "stale-refresh",
+		UpdatedAt:    100,
+	}
+
+	preserveNewerCodexAuthorizations(incoming, current)
+
+	if got := incoming.Channels[0].CodexAuth.AccessToken; got != "fresh-access" {
+		t.Fatalf("stale config overwrote refreshed token: %q", got)
+	}
+}
+
+func TestHandleProxyDoesNotRefreshPermanentlyRevokedCodexToken(t *testing.T) {
+	cfg := config.Default()
+	cfg.NoAuth = true
+	cfg.Channels = []config.Channel{{
+		ID:       "#1",
+		BaseURL:  config.CodexBaseURL,
+		AuthType: config.ChannelAuthCodex,
+		CodexAuth: &config.CodexAuth{
+			AccessToken:  "revoked-access",
+			RefreshToken: "refresh-1",
+			ExpiresAt:    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+		Models: []string{"*"},
+	}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshCalls := 0
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == codexOAuthTokenURL {
+			refreshCalls++
+		}
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"error":{"code":"token_revoked","message":"revoked"}}`)),
+		}, nil
+	})
+	srv := &Server{engine: eng}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.6-sol"}`))
+
+	srv.handleProxy(recorder, req)
+
+	if refreshCalls != 0 {
+		t.Fatalf("refresh calls = %d, want 0", refreshCalls)
+	}
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+}
+
+func TestHandleProxyAttemptsOnlyOneCodexRefreshForRepeated401(t *testing.T) {
+	cfg := config.Default()
+	cfg.NoAuth = true
+	cfg.Channels = []config.Channel{{
+		ID:         "#1",
+		BaseURL:    config.CodexBaseURL,
+		AuthType:   config.ChannelAuthCodex,
+		MaxRetries: 4,
+		CodexAuth: &config.CodexAuth{
+			AccessToken:  "stale-access",
+			RefreshToken: "refresh-1",
+			ExpiresAt:    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+		Models: []string{"*"},
+	}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshCalls := 0
+	responseCalls := 0
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == codexOAuthTokenURL {
+			refreshCalls++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewBufferString(`{"access_token":"fresh-access","expires_in":3600}`)),
+			}, nil
+		}
+		responseCalls++
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"error":{"message":"still unauthorized"}}`)),
+		}, nil
+	})
+	srv := &Server{engine: eng, cfgPath: filepath.Join(t.TempDir(), "config.json")}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.6-sol"}`))
+
+	srv.handleProxy(recorder, req)
+
+	if refreshCalls != 1 || responseCalls != 2 {
+		t.Fatalf("refresh calls = %d, response calls = %d", refreshCalls, responseCalls)
 	}
 }
 

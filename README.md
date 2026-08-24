@@ -7,6 +7,7 @@ MKSwitch is a cross-platform desktop application for routing local AI model requ
 ## Features
 
 - Graphical management for channels, groups, priorities, model mappings, and access tokens
+- Channels can use an API key or imported Codex `auth.json` authorization with automatic OAuth token refresh
 - Channel health checks, retries, and automatic failover
 - Client model names can be mapped to different upstream model names
 - OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, and `/v1/models` endpoints
@@ -111,7 +112,7 @@ Desktop application data is stored in the system application configuration direc
 %APPDATA%\cc.minki.mkswitch\
 ```
 
-`config.json` contains upstream API keys and local access tokens. `usage.json` contains local usage records. Do not commit or share these files.
+`config.json` contains upstream API keys, Codex OAuth authorization, and local access tokens. `usage.json` contains local usage records. Do not commit or share these files.
 
 MKSwitch listens on `127.0.0.1` by default. When LAN access is enabled, keep token authentication enabled and only use the application on trusted networks. MKSwitch does not upload configuration or usage records by itself; proxied requests are still sent to the upstream services you configure.
 

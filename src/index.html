@@ -15,6 +15,7 @@
           <button class="tab active" data-tab="channels" data-i18n="tabs.channels">渠道</button>
           <button class="tab" data-tab="connect" data-i18n="tabs.connect">接入</button>
           <button class="tab" data-tab="usage" data-i18n="tabs.usage">使用记录</button>
+          <button class="tab" data-tab="tools" data-i18n="tabs.tools">实用工具</button>
         </nav>
         <div class="header-actions">
           <select id="locale-select" class="locale-select" aria-label="语言" data-i18n-aria-label="language.label">
@@ -157,6 +158,54 @@
           <p id="usage-empty" class="empty" data-i18n="usage.empty">还没有使用记录，启动代理并调用后这里会显示。</p>
         </div>
       </section>
+
+      <section id="tools" class="panel">
+        <div class="card">
+          <div class="card-title-row">
+            <span class="card-title" data-i18n="tools.codexTitle">Codex 同步</span>
+          </div>
+          <div class="codex-controls">
+            <label class="codex-field">
+              <span data-i18n="tools.codexProvider">目标 Provider</span>
+              <select id="codex-provider-select"></select>
+            </label>
+            <label class="codex-field">
+              <span data-i18n="tools.codexKeep">保留备份数</span>
+              <input id="codex-keep-input" type="number" min="1" value="5" />
+            </label>
+            <label class="check codex-check">
+              <input id="codex-restore-pinned" type="checkbox" />
+              <span data-i18n="tools.codexRestorePinned">恢复固定项目</span>
+            </label>
+          </div>
+          <div class="toolbar">
+            <button id="btn-codex-sync" class="primary" data-i18n="tools.codexSync">立即同步</button>
+            <button id="btn-codex-status" class="ghost" data-i18n="tools.codexRefresh">刷新状态</button>
+            <button id="btn-codex-prune" class="ghost" data-i18n="tools.codexPrune">清理备份</button>
+            <span class="muted" id="codex-state"></span>
+          </div>
+          <div id="codex-overview" class="codex-overview"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title-row">
+            <span class="card-title" data-i18n="tools.codexBackups">备份</span>
+          </div>
+          <div class="table-wrap flush-table">
+            <table>
+              <thead>
+                <tr>
+                  <th data-i18n="columns.name">名称</th>
+                  <th data-i18n="columns.size">大小</th>
+                  <th data-i18n="columns.actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="codex-backup-rows"></tbody>
+            </table>
+          </div>
+          <p id="codex-backup-empty" class="empty" data-i18n="tools.codexBackupsEmpty">还没有备份。</p>
+        </div>
+      </section>
       </div>
     </main>
 
@@ -171,6 +220,16 @@
           <button id="modal-cancel" data-i18n="actions.cancel">取消</button>
           <button id="modal-save" class="primary" data-i18n="actions.save">保存</button>
         </div>
+      </div>
+    </div>
+
+    <div id="terminal-overlay" class="terminal-overlay hidden">
+      <div class="terminal-window">
+        <div class="terminal-head">
+          <span id="terminal-title" data-i18n="tools.codexConsoleTitle">Codex 同步</span>
+          <button id="terminal-close" class="icon-btn" aria-label="关闭" data-i18n-aria-label="actions.close">×</button>
+        </div>
+        <pre id="terminal-output" class="terminal-output"></pre>
       </div>
     </div>
 

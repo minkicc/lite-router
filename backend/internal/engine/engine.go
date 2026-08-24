@@ -31,6 +31,7 @@ type ChannelState struct {
 	ID                   string            `json:"id"`
 	Name                 string            `json:"name"`
 	BaseURL              string            `json:"base_url"`
+	AuthType             string            `json:"auth_type,omitempty"`
 	Models               []string          `json:"models"`
 	ModelMappings        map[string]string `json:"model_mappings,omitempty"`
 	Priority             int               `json:"priority"`
@@ -72,13 +73,14 @@ type channelRuntime struct {
 }
 
 type Engine struct {
-	mu           sync.RWMutex
-	cfg          config.Config
-	runtimes     map[string]*channelRuntime
-	checkMu      sync.Mutex
-	checking     map[string]bool
-	proxyClient  *http.Client
-	healthClient *http.Client
+	mu                sync.RWMutex
+	cfg               config.Config
+	runtimes          map[string]*channelRuntime
+	checkMu           sync.Mutex
+	checking          map[string]bool
+	proxyClient       *http.Client
+	healthClient      *http.Client
+	codexAuthResolver func(context.Context, string) (*config.CodexAuth, error)
 }
 
 const (
@@ -94,6 +96,12 @@ const (
 
 func (e *Engine) ProxyClient() *http.Client {
 	return e.proxyClient
+}
+
+func (e *Engine) SetCodexAuthResolver(resolver func(context.Context, string) (*config.CodexAuth, error)) {
+	e.mu.Lock()
+	e.codexAuthResolver = resolver
+	e.mu.Unlock()
 }
 
 func New(cfg *config.Config) (*Engine, error) {
@@ -271,13 +279,41 @@ func (e *Engine) probe(ch config.Channel, path string, timeoutSeconds int) (int,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
+	if ch.IsCodexAuth() {
+		e.mu.RLock()
+		resolver := e.codexAuthResolver
+		e.mu.RUnlock()
+		if resolver != nil {
+			auth, err := resolver(ctx, ch.ID)
+			if err != nil {
+				return 0, 0, err
+			}
+			ch.CodexAuth = auth
+		}
+	}
 	target := BuildURL(ch.BaseURL, path)
+	if ch.IsCodexAuth() {
+		target = strings.TrimRight(ch.BaseURL, "/") + "/models"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return 0, 0, err
 	}
 	if strings.TrimSpace(ch.APIKey) != "" {
 		req.Header.Set("Authorization", "Bearer "+ch.APIKey)
+	}
+	if ch.IsCodexAuth() && ch.CodexAuth != nil {
+		auth := *ch.CodexAuth
+		auth.Normalize()
+		if auth.AccessToken != "" {
+			req.Header.Set("Authorization", "Bearer "+auth.AccessToken)
+		}
+		if auth.AccountID != "" {
+			req.Header.Set("ChatGPT-Account-ID", auth.AccountID)
+		}
+		req.Header.Set("User-Agent", "codex-tui/0.146.0 (Windows 11; x86_64) WindowsTerminal")
+		req.Header.Set("Originator", "codex-tui")
+		req.Header.Set("Version", "0.146.0")
 	}
 	for k, v := range ch.Headers {
 		req.Header.Set(k, v)
@@ -402,6 +438,7 @@ func (e *Engine) State() []ChannelState {
 			ID:                   ch.ID,
 			Name:                 ch.Name,
 			BaseURL:              ch.BaseURL,
+			AuthType:             ch.AuthType,
 			Models:               append([]string(nil), ch.Models...),
 			ModelMappings:        cloneStringMap(ch.ModelMappings),
 			Priority:             ch.Priority,

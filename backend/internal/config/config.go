@@ -22,7 +22,9 @@ type Channel struct {
 	ID            string            `json:"id"`
 	Name          string            `json:"name"`
 	BaseURL       string            `json:"base_url"`
+	AuthType      string            `json:"auth_type,omitempty"`
 	APIKey        string            `json:"api_key,omitempty"`
+	CodexAuth     *CodexAuth        `json:"codex_auth,omitempty"`
 	Models        []string          `json:"models,omitempty"`
 	ModelMappings map[string]string `json:"model_mappings,omitempty"`
 	Priority      int               `json:"priority,omitempty"`
@@ -186,6 +188,21 @@ func (c *Config) Normalize() {
 	nextID := nextChannelNumber(used)
 	for i := range c.Channels {
 		ch := &c.Channels[i]
+		ch.AuthType = strings.ToLower(strings.TrimSpace(ch.AuthType))
+		if ch.AuthType == "" {
+			ch.AuthType = ChannelAuthAPIKey
+		}
+		if ch.AuthType == ChannelAuthCodex {
+			if strings.TrimSpace(ch.BaseURL) == "" {
+				ch.BaseURL = CodexBaseURL
+			}
+			if ch.CodexAuth != nil {
+				ch.CodexAuth.Normalize()
+			}
+			if len(ch.Models) == 0 {
+				ch.Models = []string{"*"}
+			}
+		}
 		id := strings.TrimSpace(ch.ID)
 		if id == "" || isLegacyAutoID(id) {
 			for {
@@ -285,6 +302,15 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(ch.BaseURL) == "" {
 			return errors.New("channel " + ch.ID + " needs base_url")
 		}
+		switch ch.AuthType {
+		case "", ChannelAuthAPIKey:
+		case ChannelAuthCodex:
+			if ch.CodexAuth == nil || (strings.TrimSpace(ch.CodexAuth.AccessToken) == "" && strings.TrimSpace(ch.CodexAuth.RefreshToken) == "") {
+				return errors.New("channel " + ch.ID + " needs codex access_token or refresh_token")
+			}
+		default:
+			return errors.New("channel " + ch.ID + " has unsupported auth_type: " + ch.AuthType)
+		}
 		if seen[ch.ID] {
 			return errors.New("duplicate channel id: " + ch.ID)
 		}
@@ -301,6 +327,10 @@ func (c *Config) Validate() error {
 
 func (c *Channel) IsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
+}
+
+func (c *Channel) IsCodexAuth() bool {
+	return strings.EqualFold(strings.TrimSpace(c.AuthType), ChannelAuthCodex)
 }
 
 func (t *Token) IsEnabled() bool {
