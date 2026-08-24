@@ -19,6 +19,23 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
 
+type cancelingBody struct {
+	data   []byte
+	read   bool
+	cancel context.CancelFunc
+}
+
+func (b *cancelingBody) Read(p []byte) (int, error) {
+	if !b.read {
+		b.read = true
+		return copy(p, b.data), nil
+	}
+	b.cancel()
+	return 0, context.Canceled
+}
+
+func (b *cancelingBody) Close() error { return nil }
+
 func TestForwardStreamsResponseImmediately(t *testing.T) {
 	eng, err := engine.New(config.Default())
 	if err != nil {
@@ -48,6 +65,29 @@ func TestForwardStreamsResponseImmediately(t *testing.T) {
 	}
 	if recorder.Body.Len() == 0 {
 		t.Fatal("stream body was not forwarded")
+	}
+}
+
+func TestForwardStreamDoesNotFailOnClientCancel(t *testing.T) {
+	eng, err := engine.New(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       &cancelingBody{data: []byte("data: {\"type\":\"response.created\"}\n\n"), cancel: cancel},
+		}, nil
+	})
+	srv := &Server{engine: eng}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+	selection := &engine.Selection{Channel: config.Channel{ID: "#1", BaseURL: "https://example.com"}, UpstreamModel: "gpt-test"}
+
+	retry, _, err := srv.forward(httptest.NewRecorder(), req, selection, []byte(`{"model":"gpt-test","stream":true}`))
+	if err != nil || retry {
+		t.Fatalf("retry=%v err=%v (client cancel must not be reported as a failure)", retry, err)
 	}
 }
 

@@ -290,10 +290,10 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 	start := time.Now()
 	resp, err := s.engine.ProxyClient().Do(req)
 	if err != nil {
-		s.engine.RecordAttempt(ch.ID, 0, err, time.Since(start))
 		if r.Context().Err() != nil || errors.Is(err, context.Canceled) {
 			return true, usageInfo{}, &retryDecisionError{err: err, same: false}
 		}
+		s.engine.RecordAttempt(ch.ID, 0, err, time.Since(start))
 		return true, usageInfo{}, &retryDecisionError{err: err, same: true}
 	}
 	defer resp.Body.Close()
@@ -343,6 +343,11 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 					s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, time.Since(start))
 					return false, parseSSEUsageBody(captured.Bytes()), nil
 				}
+				if r.Context().Err() != nil {
+					// The client canceled or disconnected mid-stream. Treat it
+					// as a clean stop, not an upstream failure.
+					return false, parseSSEUsageBody(captured.Bytes()), nil
+				}
 				s.engine.RecordAttempt(ch.ID, resp.StatusCode, readErr, time.Since(start))
 				if !wrote {
 					return true, usageInfo{}, &retryDecisionError{err: readErr, same: true}
@@ -354,6 +359,9 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 
 	data, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
+		if r.Context().Err() != nil {
+			return true, usageInfo{}, &retryDecisionError{err: readErr, same: false}
+		}
 		s.engine.RecordAttempt(ch.ID, resp.StatusCode, readErr, latency)
 		return true, usageInfo{}, &retryDecisionError{err: readErr, same: true}
 	}
