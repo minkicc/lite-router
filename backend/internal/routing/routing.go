@@ -29,6 +29,7 @@ type Route struct {
 	MaxRetries    int
 	Status        Status
 	ResponseTime  time.Duration
+	Cooldown      bool
 }
 
 type ModelMapping struct {
@@ -117,7 +118,7 @@ func Select(requested string, routes []Route, mappings []ModelMapping, groups []
 	}
 	candidates := make([]candidate, 0, len(routes))
 	for _, route := range routes {
-		if !route.Enabled || route.Status == StatusDisabled || excluded != nil && excluded[route.ID] {
+		if !route.Enabled || route.Status == StatusDisabled || route.Cooldown || excluded != nil && excluded[route.ID] {
 			continue
 		}
 		upstream, ok := ResolveUpstreamModel(&route, requested, mappings)

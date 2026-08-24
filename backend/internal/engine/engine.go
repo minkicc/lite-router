@@ -46,6 +46,7 @@ type ChannelState struct {
 	LastStatusCode       int               `json:"last_status_code"`
 	LastChecked          int64             `json:"last_checked"`
 	LastError            string            `json:"last_error,omitempty"`
+	CooldownUntil        int64             `json:"cooldown_until,omitempty"`
 }
 
 type Selection struct {
@@ -62,6 +63,7 @@ type healthState struct {
 	lastChecked          time.Time
 	lastError            string
 	nextCheck            time.Time
+	cooldownUntil        time.Time
 }
 
 type channelRuntime struct {
@@ -84,6 +86,10 @@ const (
 	// Allow slow reasoning/model cold starts while still failing a dead
 	// upstream before the full streaming request timeout elapses.
 	proxyHeaderTimeout = 5 * time.Minute
+	// After a real request fails, keep the channel out of routing for a
+	// short window so subsequent requests fail over to other channels instead
+	// of hammering the same broken upstream.
+	cooldownAfterFailure = 60 * time.Second
 )
 
 func (e *Engine) ProxyClient() *http.Client {
@@ -354,6 +360,7 @@ func (e *Engine) recordFailure(id string, status int, latency time.Duration, err
 func (e *Engine) RecordAttempt(id string, status int, err error, latency time.Duration) {
 	if err != nil {
 		e.recordFailure(id, status, latency, err)
+		e.startCooldown(id)
 		return
 	}
 	if status >= 200 && status < 300 {
@@ -362,6 +369,15 @@ func (e *Engine) RecordAttempt(id string, status int, err error, latency time.Du
 	}
 	if routing.IsRetryableStatus(status) {
 		e.recordFailure(id, status, latency, nil)
+		e.startCooldown(id)
+	}
+}
+
+func (e *Engine) startCooldown(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if rt, ok := e.runtimes[id]; ok {
+		rt.health.cooldownUntil = time.Now().Add(cooldownAfterFailure)
 	}
 }
 
@@ -400,6 +416,7 @@ func (e *Engine) State() []ChannelState {
 			LastStatusCode:       rt.health.lastStatusCode,
 			LastChecked:          rt.health.lastChecked.Unix(),
 			LastError:            rt.health.lastError,
+			CooldownUntil:        cooldownUntilUnix(rt.health.cooldownUntil),
 		}
 		out = append(out, st)
 	}
@@ -422,8 +439,9 @@ func (e *Engine) Select(requestedModel string, excluded map[string]bool) (*Selec
 	e.mu.RLock()
 	cfg := e.cfg.Clone()
 	routes := make([]routing.Route, 0, len(e.runtimes))
+	now := time.Now()
 	for _, rt := range e.runtimes {
-		routes = append(routes, routeFromChannel(rt.channel, rt.health.status, rt.health.responseTime))
+		routes = append(routes, routeFromChannel(rt.channel, rt.health.status, rt.health.responseTime, rt.coolingDown(now)))
 	}
 	e.mu.RUnlock()
 
@@ -452,7 +470,7 @@ func (e *Engine) Select(requestedModel string, excluded map[string]bool) (*Selec
 	return &Selection{Channel: channel, UpstreamModel: sel.UpstreamModel}, nil
 }
 
-func routeFromChannel(ch config.Channel, status HealthStatus, latency time.Duration) routing.Route {
+func routeFromChannel(ch config.Channel, status HealthStatus, latency time.Duration, coolingDown bool) routing.Route {
 	return routing.Route{
 		ID:            ch.ID,
 		Name:          ch.Name,
@@ -466,7 +484,19 @@ func routeFromChannel(ch config.Channel, status HealthStatus, latency time.Durat
 		MaxRetries:    ch.MaxRetries,
 		Status:        routingStatus(status),
 		ResponseTime:  latency,
+		Cooldown:      coolingDown,
 	}
+}
+
+func (rt *channelRuntime) coolingDown(now time.Time) bool {
+	return !rt.health.cooldownUntil.IsZero() && now.Before(rt.health.cooldownUntil)
+}
+
+func cooldownUntilUnix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }
 
 func routingStatus(status HealthStatus) routing.Status {

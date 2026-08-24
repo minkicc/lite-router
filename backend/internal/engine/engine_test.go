@@ -67,6 +67,36 @@ func TestSelectExcludesFailedChannel(t *testing.T) {
 	}
 }
 
+func TestSelectSkipsChannelInCooldown(t *testing.T) {
+	cfg := testConfig(
+		config.Channel{ID: "a", BaseURL: "https://a.example.com", Models: []string{"gpt-4"}, Priority: 10},
+		config.Channel{ID: "b", BaseURL: "https://b.example.com", Models: []string{"gpt-4"}, Priority: 1},
+	)
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng.RecordAttempt("a", 500, nil, 10*time.Millisecond)
+	got, err := eng.Select("gpt-4", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Channel.ID != "b" {
+		t.Fatalf("picked %q, want b (a should be in cooldown)", got.Channel.ID)
+	}
+
+	reported := false
+	for _, st := range eng.State() {
+		if st.ID == "a" && st.CooldownUntil != 0 {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Fatal("expected channel a to report a cooldown deadline")
+	}
+}
+
 func TestResolveChannelModelMapping(t *testing.T) {
 	ch := config.Channel{
 		ID:            "deepseek",
