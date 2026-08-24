@@ -68,8 +68,10 @@ func TestForwardStreamsResponseImmediately(t *testing.T) {
 	}
 }
 
-func TestForwardStreamDoesNotFailOnClientCancel(t *testing.T) {
-	eng, err := engine.New(config.Default())
+func TestForwardStreamDoesNotMarkChannelFailedOnClientCancel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{ID: "#1", BaseURL: "https://example.com", Models: []string{"gpt-4"}}}
+	eng, err := engine.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,8 +88,16 @@ func TestForwardStreamDoesNotFailOnClientCancel(t *testing.T) {
 	selection := &engine.Selection{Channel: config.Channel{ID: "#1", BaseURL: "https://example.com"}, UpstreamModel: "gpt-test"}
 
 	retry, _, err := srv.forward(httptest.NewRecorder(), req, selection, []byte(`{"model":"gpt-test","stream":true}`))
-	if err != nil || retry {
-		t.Fatalf("retry=%v err=%v (client cancel must not be reported as a failure)", retry, err)
+	if retry {
+		t.Fatal("client cancel must not trigger failover")
+	}
+	if err == nil {
+		t.Fatal("client cancel must be reported as a cancellation, not success")
+	}
+	for _, st := range eng.State() {
+		if st.ID == "#1" && st.ConsecutiveFailures != 0 {
+			t.Fatalf("client cancel must not mark the channel failed, got %d failures", st.ConsecutiveFailures)
+		}
 	}
 }
 

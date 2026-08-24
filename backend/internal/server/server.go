@@ -344,9 +344,9 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 					return false, parseSSEUsageBody(captured.Bytes()), nil
 				}
 				if r.Context().Err() != nil {
-					// The client canceled or disconnected mid-stream. Treat it
-					// as a clean stop, not an upstream failure.
-					return false, parseSSEUsageBody(captured.Bytes()), nil
+					// The client canceled or disconnected mid-stream. Record it
+					// as a cancellation, but do not mark the channel unhealthy.
+					return false, parseSSEUsageBody(captured.Bytes()), readErr
 				}
 				s.engine.RecordAttempt(ch.ID, resp.StatusCode, readErr, time.Since(start))
 				if !wrote {
