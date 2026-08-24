@@ -360,7 +360,6 @@ func (e *Engine) recordFailure(id string, status int, latency time.Duration, err
 func (e *Engine) RecordAttempt(id string, status int, err error, latency time.Duration) {
 	if err != nil {
 		e.recordFailure(id, status, latency, err)
-		e.startCooldown(id)
 		return
 	}
 	if status >= 200 && status < 300 {
@@ -369,11 +368,13 @@ func (e *Engine) RecordAttempt(id string, status int, err error, latency time.Du
 	}
 	if routing.IsRetryableStatus(status) {
 		e.recordFailure(id, status, latency, nil)
-		e.startCooldown(id)
 	}
 }
 
-func (e *Engine) startCooldown(id string) {
+// Cooldown removes a channel from routing for a short window. It must be
+// called after the channel's retries have been exhausted (or the failure is
+// not worth retrying on the same channel), not on the first failed attempt.
+func (e *Engine) Cooldown(id string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if rt, ok := e.runtimes[id]; ok {

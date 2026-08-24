@@ -77,7 +77,7 @@ func TestSelectSkipsChannelInCooldown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng.RecordAttempt("a", 500, nil, 10*time.Millisecond)
+	eng.Cooldown("a")
 	got, err := eng.Select("gpt-4", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +94,22 @@ func TestSelectSkipsChannelInCooldown(t *testing.T) {
 	}
 	if !reported {
 		t.Fatal("expected channel a to report a cooldown deadline")
+	}
+}
+
+func TestRecordAttemptDoesNotCooldown(t *testing.T) {
+	cfg := testConfig(
+		config.Channel{ID: "a", BaseURL: "https://a.example.com", Models: []string{"gpt-4"}},
+	)
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.RecordAttempt("a", 500, nil, 10*time.Millisecond)
+	for _, st := range eng.State() {
+		if st.ID == "a" && st.CooldownUntil != 0 {
+			t.Fatal("RecordAttempt alone should not trigger cooldown")
+		}
 	}
 }
 

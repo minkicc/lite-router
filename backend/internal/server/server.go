@@ -217,6 +217,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			attempts++
 			if !retryOnSameChannel(forwardErr) || attempts > maxRetries {
 				excluded[selection.Channel.ID] = true
+				s.engine.Cooldown(selection.Channel.ID)
 				break
 			}
 		}

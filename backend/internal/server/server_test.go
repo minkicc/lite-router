@@ -71,6 +71,37 @@ func TestForwardDoesNotRetryCanceledRequest(t *testing.T) {
 	}
 }
 
+func TestHandleProxyCoolsDownAfterRetriesExhausted(t *testing.T) {
+	cfg := config.Default()
+	cfg.NoAuth = true
+	cfg.Channels = []config.Channel{
+		{ID: "#1", BaseURL: "https://example.com", Models: []string{"gpt-4"}, MaxRetries: 2},
+	}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"error":{"message":"down"}}`)),
+		}, nil
+	})
+	srv := &Server{engine: eng}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-4"}`))
+	srv.handleProxy(httptest.NewRecorder(), req)
+
+	states := eng.State()
+	if len(states) != 1 {
+		t.Fatalf("states = %d, want 1", len(states))
+	}
+	if states[0].CooldownUntil == 0 {
+		t.Fatal("expected channel to be in cooldown after retries exhausted")
+	}
+}
+
 func TestRetryOnSameChannel(t *testing.T) {
 	if retryOnSameChannel(errors.New("network failure")) {
 		t.Fatal("plain errors must not be treated as retry decisions")
