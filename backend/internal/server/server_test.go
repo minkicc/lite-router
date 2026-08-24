@@ -613,6 +613,60 @@ func TestForwardStreamCountsCompletedResponseWhenClientCloses(t *testing.T) {
 	}
 }
 
+func TestForwardStreamTruncatedBeforeCompletionIsFailure(t *testing.T) {
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{ID: "#1", BaseURL: "https://example.com", Models: []string{"gpt-4"}}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(bytes.NewBufferString(
+				"event: response.created\n" +
+					"data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n",
+			)),
+		}, nil
+	})
+	srv := &Server{engine: eng}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	selection := &engine.Selection{Channel: config.Channel{ID: "#1", BaseURL: "https://example.com"}, UpstreamModel: "gpt-test"}
+
+	retry, _, err := srv.forward(httptest.NewRecorder(), req, selection, []byte(`{"model":"gpt-test","stream":true}`))
+	if retry {
+		t.Fatal("truncated stream must not retry after headers were written")
+	}
+	if err == nil {
+		t.Fatal("truncated stream must be reported as a failure, not success")
+	}
+}
+
+func TestForwardStreamEmptyResponseIsRetryable(t *testing.T) {
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{ID: "#1", BaseURL: "https://example.com", Models: []string{"gpt-4"}}}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.ProxyClient().Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(bytes.NewBufferString("")),
+		}, nil
+	})
+	srv := &Server{engine: eng}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	selection := &engine.Selection{Channel: config.Channel{ID: "#1", BaseURL: "https://example.com"}, UpstreamModel: "gpt-test"}
+
+	retry, _, err := srv.forward(httptest.NewRecorder(), req, selection, []byte(`{"model":"gpt-test","stream":true}`))
+	if !retry || err == nil {
+		t.Fatalf("empty stream should be retryable: retry=%v err=%v", retry, err)
+	}
+}
+
 func TestForwardDoesNotRetryCanceledRequest(t *testing.T) {
 	eng, err := engine.New(config.Default())
 	if err != nil {

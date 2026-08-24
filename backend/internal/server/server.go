@@ -461,6 +461,17 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 			}
 			if readErr != nil {
 				if readErr == io.EOF {
+					if !sseResponseCompleted(captured.Bytes()) {
+						// The upstream closed the SSE stream before it reached a
+						// terminal event. Forwarding this to the client as success
+						// would hide a truncated response, so treat it as a failure.
+						truncErr := errors.New("upstream stream ended before completion")
+						s.engine.RecordAttempt(ch.ID, resp.StatusCode, truncErr, time.Since(start))
+						if !wrote {
+							return true, usageInfo{}, &retryDecisionError{err: truncErr, same: true}
+						}
+						return false, parseSSEUsageBody(captured.Bytes()), truncErr
+					}
 					if !wrote {
 						w.WriteHeader(resp.StatusCode)
 					}
@@ -987,6 +998,7 @@ func (s *Server) handleCodexSyncEvents(w http.ResponseWriter, r *http.Request) {
 	for _, line := range codex.SummaryLines(result, label) {
 		progress(line)
 	}
+	progress("SUCCESS")
 
 	payload, _ := json.Marshal(result)
 	writeEvent("result", string(payload))
