@@ -83,15 +83,35 @@ fn spawn_router(app: &AppHandle) -> Result<CommandChild, String> {
         .spawn()
         .map_err(|e| e.to_string())?;
 
+    let pid = child.pid();
+    let app_handle = app.clone();
+
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             if let CommandEvent::Terminated(_) = event {
+                clear_router_child(&app_handle, pid);
                 break;
             }
         }
     });
 
     Ok(child)
+}
+
+fn clear_router_child(app: &AppHandle, pid: u32) {
+    let state = app.state::<RouterState>();
+    let should_sync = {
+        let mut child = state.child.lock().unwrap();
+        if child.as_ref().map(|current| current.pid()) == Some(pid) {
+            child.take();
+            true
+        } else {
+            false
+        }
+    };
+    if should_sync {
+        sync_tray_status(app);
+    }
 }
 
 #[tauri::command]

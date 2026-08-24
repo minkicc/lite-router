@@ -218,8 +218,12 @@ func IsRetryableError(status int, body []byte) bool {
 }
 
 func looksLikeSSE(body []byte) bool {
-	text := string(body)
-	return strings.Contains(text, "data:") && (strings.Contains(text, "event:") || strings.Contains(text, "response."))
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "data:") {
+			return true
+		}
+	}
+	return false
 }
 
 func jsonEventFailed(data []byte) bool {

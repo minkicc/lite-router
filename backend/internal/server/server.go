@@ -102,6 +102,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":             "ok",
+		"build":              "1.0.8",
 		"channels":           len(states),
 		"unhealthy_channels": unhealthy,
 	})
@@ -185,9 +186,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		lastSelection = selection
 		maxRetries := selection.Channel.MaxRetries
-		if maxRetries < 1 {
-			// A transient upstream failure gets one automatic retry even when
-			// the channel has no explicit retry setting.
+		if maxRetries <= 0 {
+			// Keep one same-channel retry when the channel does not
+			// configure an explicit value: one request plus one retry.
 			maxRetries = 1
 		}
 		attempts := 0
@@ -201,9 +202,18 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 				lastErr = forwardErr
 				lastForwardErr = forwardErr
 			}
+			if isCancellationError(forwardErr) {
+				return
+			}
 			if r.Context().Err() != nil {
-				lastErr = r.Context().Err()
-				break
+				if forwardErr == nil {
+					s.recordTokens(tokenID, usage)
+					s.recordUsage(r, tokenID, requestedModel, selection, usage, start, true, "")
+				}
+				// A client cancellation is not an upstream attempt failure.
+				// Do not pollute usage statistics when a caller races or
+				// abandons a parallel request after another one completed.
+				return
 			}
 			if !retry {
 				if forwardErr != nil {
@@ -221,6 +231,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
+	}
+	if r.Context().Err() != nil {
+		return
 	}
 	errMsg := errorText(lastForwardErr)
 	if errMsg == "" {
@@ -245,6 +258,9 @@ func retryOnSameChannel(err error) bool {
 
 func (s *Server) recordUsage(r *http.Request, tokenID, model string, selection *engine.Selection, usage usageInfo, start time.Time, success bool, errText string) {
 	if s.usage == nil {
+		return
+	}
+	if !success && isCancellationError(errors.New(errText)) {
 		return
 	}
 	rec := usageRecord{
@@ -343,10 +359,17 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 					s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, time.Since(start))
 					return false, parseSSEUsageBody(captured.Bytes()), nil
 				}
-				if r.Context().Err() != nil {
-					// The client canceled or disconnected mid-stream. Record it
-					// as a cancellation, but do not mark the channel unhealthy.
-					return false, parseSSEUsageBody(captured.Bytes()), readErr
+				if r.Context().Err() != nil || isCancellationError(readErr) {
+					usage := parseSSEUsageBody(captured.Bytes())
+					// Clients commonly close a stream immediately after receiving the
+					// terminal event. If the upstream already completed successfully,
+					// keep the request as a success even though draining the body was
+					// interrupted by the client disconnect.
+					if sseResponseCompleted(captured.Bytes()) {
+						s.engine.RecordAttempt(ch.ID, resp.StatusCode, nil, time.Since(start))
+						return false, usage, nil
+					}
+					return false, usage, readErr
 				}
 				s.engine.RecordAttempt(ch.ID, resp.StatusCode, readErr, time.Since(start))
 				if !wrote {
@@ -359,7 +382,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 
 	data, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		if r.Context().Err() != nil {
+		if r.Context().Err() != nil || isCancellationError(readErr) {
 			return true, usageInfo{}, &retryDecisionError{err: readErr, same: false}
 		}
 		s.engine.RecordAttempt(ch.ID, resp.StatusCode, readErr, latency)
@@ -442,6 +465,56 @@ func parseSSEUsageBody(data []byte) usageInfo {
 		}
 	}
 	return usage
+}
+
+func isCancellationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "context canceled")
+}
+
+func sseResponseCompleted(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			return true
+		}
+		if payload == "" {
+			continue
+		}
+		var event map[string]any
+		if json.Unmarshal([]byte(payload), &event) != nil {
+			continue
+		}
+		typ, _ := event["type"].(string)
+		if typ == "response.completed" || typ == "response.done" {
+			return true
+		}
+		if response, ok := event["response"].(map[string]any); ok {
+			status, _ := response["status"].(string)
+			if status == "completed" {
+				return true
+			}
+		}
+		if choices, ok := event["choices"].([]any); ok {
+			for _, item := range choices {
+				choice, _ := item.(map[string]any)
+				finish, _ := choice["finish_reason"].(string)
+				if strings.TrimSpace(finish) != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (s *Server) recordRequest(tokenID string) {

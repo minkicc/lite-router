@@ -15,6 +15,20 @@ func TestRetryableStatusClassification(t *testing.T) {
 	}
 }
 
+func TestResponseFailedDetectsChatCompletionSSEError(t *testing.T) {
+	body := []byte("data: {\"error\":{\"message\":\"upstream failed\"}}\n\ndata: [DONE]\n\n")
+	if !ResponseFailed(body) {
+		t.Fatal("chat completion SSE error was not detected")
+	}
+}
+
+func TestResponseFailedDoesNotRejectChatCompletionSSE(t *testing.T) {
+	body := []byte("data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	if ResponseFailed(body) {
+		t.Fatal("normal chat completion SSE was marked as failed")
+	}
+}
+
 func TestResolveMappingUsesAdvertisedUpstreamModel(t *testing.T) {
 	mappings := []ModelMapping{{
 		PlatformModel: "gpt-5.6-sol",
