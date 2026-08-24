@@ -49,6 +49,7 @@ type ChannelState struct {
 	LastError            string            `json:"last_error,omitempty"`
 	CooldownUntil        int64             `json:"cooldown_until,omitempty"`
 	CooldownCount        int               `json:"cooldown_count,omitempty"`
+	CooldownDuration     int64             `json:"cooldown_duration_seconds,omitempty"`
 }
 
 type Selection struct {
@@ -216,29 +217,45 @@ func (e *Engine) CheckAll() {
 }
 
 func (e *Engine) CheckNow(id string) {
-	e.mu.RLock()
+	now := time.Now()
+	e.mu.Lock()
 	rt, ok := e.runtimes[id]
-	e.mu.RUnlock()
 	if !ok || !rt.channel.IsEnabled() {
+		e.mu.Unlock()
 		return
 	}
+	if !rt.health.cooldownUntil.IsZero() && now.Before(rt.health.cooldownUntil) {
+		// A cooling channel must stay out of the health-check loop: probing
+		// /v1/models while it is cooling would clear the failure signal that
+		// triggered the cooldown in the first place.
+		interval := rt.channel.EffectiveHealth(e.cfg.HealthCheck).IntervalSeconds
+		if interval <= 0 {
+			interval = 30
+		}
+		rt.health.nextCheck = now.Add(time.Duration(interval) * time.Second)
+		e.mu.Unlock()
+		return
+	}
+	ch := rt.channel
+	e.mu.Unlock()
+
 	if !e.beginCheck(id) {
 		return
 	}
 	defer e.endCheck(id)
 
-	health := rt.channel.EffectiveHealth(e.currentGlobalHealth())
+	health := ch.EffectiveHealth(e.currentGlobalHealth())
 	path := strings.TrimSpace(health.Path)
 	if path == "" {
 		path = "/v1/models"
 	}
-	status, latency, err := e.probe(rt.channel, path, health.TimeoutSeconds)
+	status, latency, err := e.probe(ch, path, health.TimeoutSeconds)
 	if err != nil {
 		e.recordFailure(id, status, latency, err)
 		return
 	}
 	if status >= 200 && status < 300 {
-		e.recordSuccess(id, status, latency)
+		e.recordSuccess(id, status, latency, false)
 		return
 	}
 	if status == http.StatusNotFound && (path == "/v1/models" || path == "/models") {
@@ -246,9 +263,9 @@ func (e *Engine) CheckNow(id string) {
 		if path == "/models" {
 			alt = "/v1/models"
 		}
-		altStatus, altLatency, altErr := e.probe(rt.channel, alt, health.TimeoutSeconds)
+		altStatus, altLatency, altErr := e.probe(ch, alt, health.TimeoutSeconds)
 		if altErr == nil && altStatus >= 200 && altStatus < 300 {
-			e.recordSuccess(id, altStatus, altLatency)
+			e.recordSuccess(id, altStatus, altLatency, false)
 			return
 		}
 	}
@@ -341,7 +358,7 @@ func drainBody(resp *http.Response) error {
 	return err
 }
 
-func (e *Engine) recordSuccess(id string, status int, latency time.Duration) {
+func (e *Engine) recordSuccess(id string, status int, latency time.Duration, fromRequest bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	rt, ok := e.runtimes[id]
@@ -357,13 +374,21 @@ func (e *Engine) recordSuccess(id string, status int, latency time.Duration) {
 	rt.health.lastChecked = time.Now()
 	rt.health.lastError = ""
 	rt.health.responseTime = latency
-	rt.health.consecutiveCooldowns = 0
+	// Only a real request success resets the cooldown escalation ladder. A
+	// successful /v1/models probe must not hide repeated request failures.
+	if fromRequest {
+		rt.health.consecutiveCooldowns = 0
+	}
 	threshold := health.SuccessThreshold
 	if threshold <= 0 {
 		threshold = 1
 	}
 	if rt.health.consecutiveSuccesses >= threshold {
-		rt.health.status = StatusHealthy
+		// A channel in request-failure cooldown must remain unhealthy until
+		// the cooldown expires and a subsequent health check succeeds.
+		if rt.health.cooldownUntil.IsZero() || !time.Now().Before(rt.health.cooldownUntil) {
+			rt.health.status = StatusHealthy
+		}
 	}
 	rt.health.nextCheck = time.Now().Add(time.Duration(health.IntervalSeconds) * time.Second)
 }
@@ -404,7 +429,7 @@ func (e *Engine) RecordAttempt(id string, status int, err error, latency time.Du
 		return
 	}
 	if status >= 200 && status < 300 {
-		e.recordSuccess(id, status, latency)
+		e.recordSuccess(id, status, latency, true)
 		return
 	}
 	if routing.IsRetryableStatus(status) {
@@ -421,6 +446,9 @@ func (e *Engine) Cooldown(id string) {
 	if rt, ok := e.runtimes[id]; ok {
 		rt.health.consecutiveCooldowns++
 		rt.health.cooldownUntil = time.Now().Add(cooldownDuration(rt.health.consecutiveCooldowns))
+		// Cooldown is caused by an exhausted request retry cycle, so the
+		// channel must not continue to advertise a stale healthy status.
+		rt.health.status = StatusUnhealthy
 	}
 }
 
@@ -475,6 +503,7 @@ func (e *Engine) State() []ChannelState {
 			LastError:            rt.health.lastError,
 			CooldownUntil:        cooldownUntilUnix(rt.health.cooldownUntil),
 			CooldownCount:        rt.health.consecutiveCooldowns,
+			CooldownDuration:     int64(cooldownDuration(rt.health.consecutiveCooldowns) / time.Second),
 		}
 		out = append(out, st)
 	}

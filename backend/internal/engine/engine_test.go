@@ -175,6 +175,85 @@ func TestCooldownEscalatesAndResetsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestCooldownMarksChannelUnhealthy(t *testing.T) {
+	cfg := testConfig(
+		config.Channel{ID: "a", BaseURL: "https://a.example.com", Models: []string{"gpt-4"}},
+	)
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng.RecordAttempt("a", 200, nil, 10*time.Millisecond)
+	eng.Cooldown("a")
+
+	for _, st := range eng.State() {
+		if st.ID == "a" {
+			if st.Status != StatusUnhealthy {
+				t.Fatalf("status after cooldown = %q, want unhealthy", st.Status)
+			}
+			return
+		}
+	}
+	t.Fatal("channel a not found")
+}
+
+func TestHealthCheckSuccessDoesNotResetCooldown(t *testing.T) {
+	cfg := testConfig(
+		config.Channel{ID: "a", BaseURL: "https://a.example.com", Models: []string{"gpt-4"}},
+	)
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng.Cooldown("a")
+	eng.Cooldown("a")
+
+	// A successful /v1/models probe must not reset the escalation ladder.
+	eng.recordSuccess("a", 200, 10*time.Millisecond, false)
+
+	for _, st := range eng.State() {
+		if st.ID == "a" {
+			if st.CooldownCount != 2 {
+				t.Fatalf("cooldown count after health success = %d, want 2", st.CooldownCount)
+			}
+			if st.Status != StatusUnhealthy {
+				t.Fatalf("status after health success during cooldown = %q, want unhealthy", st.Status)
+			}
+			return
+		}
+	}
+	t.Fatal("channel a not found")
+}
+
+func TestHealthCheckSkippedDuringCooldown(t *testing.T) {
+	cfg := testConfig(
+		config.Channel{ID: "a", BaseURL: "https://a.example.com", Models: []string{"gpt-4"}},
+	)
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng.Cooldown("a")
+
+	probed := false
+	eng.healthClient.Transport = engineRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		probed = true
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})
+
+	eng.CheckNow("a")
+	if probed {
+		t.Fatal("health probe must be skipped while the channel is cooling down")
+	}
+}
+
 func TestResolveChannelModelMapping(t *testing.T) {
 	ch := config.Channel{
 		ID:            "deepseek",

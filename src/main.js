@@ -134,23 +134,74 @@ function channelRowHtml(entry, stateMap) {
   const st = stateMap[ch.id] || {};
   const label = statusLabel(st.status);
   const models = (ch.models || []).map(esc).join(", ");
-  const latency = st.response_time_ms > 0 ? `${st.response_time_ms} ms` : "—";
+  const latency = formatLatency(st.response_time_ms);
   const enabled = ch.enabled !== false;
   return `
     <tr>
-      <td><span class="badge ${esc(st.status || "unknown")}">${esc(label)}</span></td>
+      <td class="channel-status-cell">${channelStatusHtml(st, label)}</td>
       <td>${esc(ch.name || ch.id)}<div class="sub">${esc(ch.id || "")}${ch.auth_type === "codex" ? ` · ${esc(t("channels.authCodexShort"))}` : ""}</div></td>
       <td class="mono">${esc(ch.base_url)}</td>
       <td>${ch.priority ?? 0}</td>
       <td>${esc(ch.group || "default")}</td>
-      <td>${latency}</td>
+      <td class="channel-latency-cell">${latency}</td>
       <td class="mono">${models || "—"}</td>
-      <td class="actions-cell">
-        <button class="mini" data-action="edit-channel" data-index="${index}">${esc(t("actions.edit"))}</button>
-        <button class="mini" data-action="toggle-channel" data-index="${index}">${esc(t(enabled ? "actions.disable" : "actions.enable"))}</button>
-        <button class="mini danger" data-action="delete-channel" data-index="${index}">${esc(t("actions.delete"))}</button>
+      <td class="actions-cell channel-actions-cell">
+        <span class="row-action-menu channel-action-menu">
+          <button class="mini icon-button" type="button" title="${esc(t("channels.settings"))}" aria-label="${esc(t("channels.settings"))}" data-action="toggle-channel-menu" data-index="${index}">⚙</button>
+          <span class="action-menu" popover="auto" data-channel-menu="${index}">
+            <button type="button" data-action="edit-channel" data-index="${index}">${esc(t("actions.edit"))}</button>
+            <button type="button" data-action="toggle-channel" data-index="${index}">${esc(t(enabled ? "actions.disable" : "actions.enable"))}</button>
+            <button type="button" class="danger" data-action="delete-channel" data-index="${index}">${esc(t("actions.delete"))}</button>
+          </span>
+        </span>
       </td>
     </tr>`;
+}
+
+function formatLatency(milliseconds) {
+  const ms = Number(milliseconds) || 0;
+  if (ms <= 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function formatCooldownRemaining(seconds) {
+  const s = Math.max(0, Math.ceil(Number(seconds) || 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  if (m < 60) return rem ? `${m}m${rem}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm ? `${h}h${mm}m` : `${h}h`;
+}
+
+function cooldownProgressHtml(st) {
+  const until = Number(st.cooldown_until) || 0;
+  const now = Math.floor(Date.now() / 1000);
+  if (!until || until <= now) return "";
+  const total = Number(st.cooldown_duration_seconds) || 0;
+  if (total <= 0) return "";
+  const remaining = Math.max(0, until - now);
+  const fraction = Math.max(0, Math.min(1, remaining / total));
+  const circumference = 2 * Math.PI * 7;
+  const offset = circumference * (1 - fraction);
+  const label = formatCooldownRemaining(remaining);
+  return `
+    <span class="cooldown-ring" title="${esc(t("channels.cooldownRemaining", { time: label }))}">
+      <svg viewBox="0 0 18 18" aria-hidden="true">
+        <g transform="rotate(-90 9 9)">
+          <circle class="cooldown-bg" cx="9" cy="9" r="7"></circle>
+          <circle class="cooldown-fg" cx="9" cy="9" r="7" style="stroke-dasharray:${circumference.toFixed(2)};stroke-dashoffset:${offset.toFixed(2)}"></circle>
+        </g>
+      </svg>
+      <span class="cooldown-text">${esc(label)}</span>
+    </span>`;
+}
+
+function channelStatusHtml(st, label) {
+  const badge = `<span class="badge ${esc(st.status || "unknown")}">${esc(label)}</span>`;
+  return `<span class="channel-status">${badge}${cooldownProgressHtml(st)}</span>`;
 }
 
 function renderChannels() {
@@ -180,17 +231,21 @@ function renderChannels() {
       <div class="group-block">
         <div class="group-block-title">${esc(g.name)} <span class="muted">${esc(t("groups.priority", { value: g.priority ?? 0 }))}</span></div>
         <div class="table-wrap">
-          <table>
+          <table class="channel-table">
+            <colgroup>
+              <col class="channel-col-status" />
+              <col span="7" />
+            </colgroup>
             <thead>
               <tr>
-                <th>${esc(t("columns.status"))}</th>
+                <th class="channel-status-cell">${esc(t("columns.status"))}</th>
                 <th>${esc(t("columns.channel"))}</th>
                 <th>Base URL</th>
                 <th>${esc(t("columns.priority"))}</th>
                 <th>${esc(t("columns.group"))}</th>
-                <th>${esc(t("columns.latency"))}</th>
+                <th class="channel-latency-cell">${esc(t("columns.latency"))}</th>
                 <th>${esc(t("columns.model"))}</th>
-                <th>${esc(t("columns.actions"))}</th>
+                <th class="channel-actions-cell">${esc(t("columns.actions"))}</th>
               </tr>
             </thead>
             <tbody>${list.map((entry) => channelRowHtml(entry, stateMap)).join("")}</tbody>
@@ -291,7 +346,7 @@ function renderTokens() {
           <td class="actions-cell">
             <button class="mini" data-action="copy-token" data-id="${esc(token.id)}">${esc(t("actions.copy"))}</button>
             <button class="mini" data-action="toggle-token" data-id="${esc(token.id)}">${esc(t(enabled ? "actions.disable" : "actions.enable"))}</button>
-            <span class="token-action-menu">
+            <span class="row-action-menu token-action-menu">
               <button class="mini icon-button" type="button" title="${esc(t("tokens.settings"))}" aria-label="${esc(t("tokens.settings"))}" data-action="toggle-token-menu" data-id="${esc(token.id)}">⚙</button>
               <span class="action-menu" popover="auto" data-token-menu="${esc(token.id)}">
                 <button type="button" data-action="edit-token" data-id="${esc(token.id)}">${esc(t("actions.edit"))}</button>
@@ -1071,7 +1126,14 @@ async function handleAction(action, target) {
   const id = target.dataset.id;
 
   if (action === "codex-restore") return restoreCodexBackup(target.dataset.path);
-  if (action === "edit-channel") return openChannelForm(index);
+  if (action === "toggle-channel-menu") {
+    const menu = document.querySelector(`[data-channel-menu="${index}"]`);
+    return toggleActionMenu(menu, target);
+  }
+  if (action === "edit-channel") {
+    document.querySelector(`[data-channel-menu="${index}"]`)?.hidePopover();
+    return openChannelForm(index);
+  }
   if (action === "edit-mapping") return openMappingForm(index);
   if (action === "fetch-models") return fetchModelsFromForm();
   if (action === "delete-group") {
@@ -1090,11 +1152,13 @@ async function handleAction(action, target) {
   }
 
   if (action === "toggle-channel") {
+    document.querySelector(`[data-channel-menu="${index}"]`)?.hidePopover();
     config.channels[index].enabled = !(config.channels[index].enabled !== false);
     await saveConfig();
     return refresh();
   }
   if (action === "delete-channel") {
+    document.querySelector(`[data-channel-menu="${index}"]`)?.hidePopover();
     config.channels.splice(index, 1);
     await saveConfig();
     return refresh();
@@ -1116,21 +1180,7 @@ async function handleAction(action, target) {
   }
   if (action === "toggle-token-menu") {
     const menu = document.querySelector(`[data-token-menu="${CSS.escape(id)}"]`);
-    if (!menu) return;
-    if (menu.matches(":popover-open")) {
-      menu.hidePopover();
-      return;
-    }
-    document.querySelectorAll("[data-token-menu]:popover-open").forEach((item) => item.hidePopover());
-    menu.showPopover();
-    const buttonRect = target.getBoundingClientRect();
-    const menuRect = menu.getBoundingClientRect();
-    const top = buttonRect.top > menuRect.height + 12
-      ? buttonRect.top - menuRect.height - 5
-      : buttonRect.bottom + 5;
-    menu.style.left = `${Math.max(8, Math.min(buttonRect.right - menuRect.width, window.innerWidth - menuRect.width - 8))}px`;
-    menu.style.top = `${top}px`;
-    return;
+    return toggleActionMenu(menu, target);
   }
   if (action === "edit-token") {
     document.querySelector(`[data-token-menu="${CSS.escape(id)}"]`)?.hidePopover();
@@ -1150,6 +1200,23 @@ async function handleAction(action, target) {
     await fetch(`${baseUrl}/api/tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
     return refresh();
   }
+}
+
+function toggleActionMenu(menu, target) {
+  if (!menu) return;
+  if (menu.matches(":popover-open")) {
+    menu.hidePopover();
+    return;
+  }
+  document.querySelectorAll(".action-menu:popover-open").forEach((item) => item.hidePopover());
+  menu.showPopover();
+  const buttonRect = target.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const top = buttonRect.top > menuRect.height + 12
+    ? buttonRect.top - menuRect.height - 5
+    : buttonRect.bottom + 5;
+  menu.style.left = `${Math.max(8, Math.min(buttonRect.right - menuRect.width, window.innerWidth - menuRect.width - 8))}px`;
+  menu.style.top = `${top}px`;
 }
 
 async function startRouter() {
@@ -1345,8 +1412,8 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   document.addEventListener("click", (e) => {
-    if (!e.target.closest(".token-action-menu")) {
-      document.querySelectorAll("[data-token-menu]:popover-open").forEach((menu) => menu.hidePopover());
+    if (!e.target.closest(".row-action-menu")) {
+      document.querySelectorAll(".action-menu:popover-open").forEach((menu) => menu.hidePopover());
     }
   });
 

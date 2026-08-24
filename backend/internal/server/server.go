@@ -163,7 +163,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":             "ok",
-		"build":              "1.0.8",
+		"build":              "1.1.0",
 		"channels":           len(states),
 		"unhealthy_channels": unhealthy,
 	})
