@@ -477,6 +477,15 @@ function renderCodex() {
   renderCodexBackups();
 }
 
+function openCodexTool() {
+  els.codexToolOverlay.classList.remove("hidden");
+  loadCodex();
+}
+
+function closeCodexTool() {
+  els.codexToolOverlay.classList.add("hidden");
+}
+
 async function loadCodex() {
   try {
     const [statusRes, backupRes] = await Promise.all([
@@ -1254,6 +1263,8 @@ window.addEventListener("DOMContentLoaded", () => {
   els.codexOverview = document.querySelector("#codex-overview");
   els.codexBackupRows = document.querySelector("#codex-backup-rows");
   els.codexBackupEmpty = document.querySelector("#codex-backup-empty");
+  els.codexToolOverlay = document.querySelector("#codex-tool-overlay");
+  els.codexToolClose = document.querySelector("#codex-tool-close");
   els.terminalOverlay = document.querySelector("#terminal-overlay");
   els.terminalTitle = document.querySelector("#terminal-title");
   els.terminalOutput = document.querySelector("#terminal-output");
@@ -1287,9 +1298,11 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#btn-add-mapping").addEventListener("click", () => openMappingForm(-1));
   document.querySelector("#btn-add-token").addEventListener("click", openTokenForm);
   document.querySelector("#btn-add-group").addEventListener("click", addGroup);
+  document.querySelector("#tool-codex-sync").addEventListener("click", openCodexTool);
   document.querySelector("#btn-codex-sync").addEventListener("click", runCodexSync);
   document.querySelector("#btn-codex-status").addEventListener("click", loadCodex);
   document.querySelector("#btn-codex-prune").addEventListener("click", runCodexPrune);
+  els.codexToolClose.addEventListener("click", closeCodexTool);
   els.terminalClose.addEventListener("click", closeTerminal);
   document.querySelector("#modal-close").addEventListener("click", closeModal);
   document.querySelector("#modal-cancel").addEventListener("click", closeModal);
