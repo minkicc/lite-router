@@ -88,6 +88,12 @@ cd backend
 go test ./...
 ```
 
+修改 Windows 后端的名称、图标或版本信息后，需要在 Windows 上重新生成并提交资源文件：
+
+```powershell
+npm run resource:windows
+```
+
 构建当前平台安装包：
 
 ```bash

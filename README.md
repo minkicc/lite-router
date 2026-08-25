@@ -88,6 +88,13 @@ cd backend
 go test ./...
 ```
 
+When changing the Windows backend name, icon, or version metadata, regenerate
+the committed resource object on Windows:
+
+```powershell
+npm run resource:windows
+```
+
 Build packages for the current platform:
 
 ```bash

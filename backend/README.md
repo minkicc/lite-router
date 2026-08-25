@@ -34,4 +34,4 @@ MKRouter 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康检�
 - `MKROUTER_NO_BROWSER`：设为 `1` 时不自动打开管理页
 - `MKROUTER_LISTEN_ADDR`：覆盖监听地址
 
-旧的 `MKSWITCH_*` 变量在 v1.1.2 中仍可作为兼容别名使用。
+旧的 `MKSWITCH_*` 变量在 v1.1.3 中仍可作为兼容别名使用。

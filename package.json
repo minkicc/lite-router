@@ -1,7 +1,7 @@
 {
   "name": "mkrouter",
   "private": true,
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "A cross-platform local AI model routing gateway",
   "repository": "https://github.com/minkicc/mkrouter",
   "homepage": "https://github.com/minkicc/mkrouter",
@@ -9,6 +9,7 @@
   "type": "module",
   "scripts": {
     "tauri": "tauri",
+    "resource:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File backend/generate-windows-resource.ps1",
     "backend:build": "node scripts/build-backend.mjs",
     "portable:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-portable.ps1",
     "dev": "npm run backend:build && tauri dev",
