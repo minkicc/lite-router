@@ -598,6 +598,31 @@ tr:last-child td { border-bottom: 0; }
 }
 .field-head .mini { min-height: 26px; padding: 2px 8px; }
 .field-hint { display: block; margin-top: 5px; color: var(--faint); font-size: 11px; font-weight: 400; }
+.auth-summary,
+.auth-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.auth-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.auth-summary .mini { flex: 0 0 auto; }
+.oauth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.oauth-actions + input + input + textarea { margin-bottom: 12px; }
 .modal-actions {
   display: flex;
   justify-content: flex-end;

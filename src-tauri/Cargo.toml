@@ -1,6 +1,6 @@
 [package]
 name = "mkswitch-desktop"
-version = "1.1.0"
+version = "1.1.1"
 description = "A local OpenAI-compatible routing proxy with a cross-platform desktop UI"
 authors = ["MKSwitch contributors"]
 license = "MIT"

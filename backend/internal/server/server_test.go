@@ -865,6 +865,61 @@ func TestBuildFallbackChain(t *testing.T) {
 	}
 }
 
+func TestParseOAuthCallbackInput(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantCode  string
+		wantState string
+	}{
+		{
+			input:     "http://localhost:1455/auth/callback?code=code-1&state=state-1",
+			wantCode:  "code-1",
+			wantState: "state-1",
+		},
+		{
+			input:     "code=code-2&state=state-2",
+			wantCode:  "code-2",
+			wantState: "state-2",
+		},
+		{
+			input:    "plain-code",
+			wantCode: "plain-code",
+		},
+	}
+	for _, tt := range tests {
+		code, state := parseOAuthCallbackInput(tt.input)
+		if code != tt.wantCode || state != tt.wantState {
+			t.Fatalf("parseOAuthCallbackInput(%q) = %q, %q", tt.input, code, state)
+		}
+	}
+}
+
+func TestCodexOAuthStartReturnsPKCESession(t *testing.T) {
+	srv := &Server{}
+	req := httptest.NewRequest(http.MethodPost, "/api/codex/oauth/start", nil)
+	rec := httptest.NewRecorder()
+	srv.handleCodexOAuthStart(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		AuthURL   string `json:"auth_url"`
+		SessionID string `json:"session_id"`
+		State     string `json:"state"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.AuthURL == "" || payload.SessionID == "" || payload.State == "" {
+		t.Fatalf("oauth start payload = %+v", payload)
+	}
+	value, ok := srv.codexOAuthSessions.Load(payload.SessionID)
+	session, sessionOK := value.(*codexOAuthSession)
+	if !ok || !sessionOK || session.State != payload.State || session.CodeVerifier == "" {
+		t.Fatalf("stored oauth session = %#v", value)
+	}
+}
+
 func TestRewriteRequestBody(t *testing.T) {
 	out, stream, err := rewriteRequestBody([]byte(`{"model":"codex-default","stream":true}`), "deepseek-chat")
 	if err != nil {

@@ -77,6 +77,19 @@ async function safeInvoke(cmd, args) {
   }
 }
 
+async function openExternal(url) {
+  if (!url) return;
+  try {
+    if (tauri?.shell?.open) {
+      await tauri.shell.open(url);
+      return;
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch {
+    await copyText(url);
+  }
+}
+
 function renderProcess(status) {
   lastProcessStatus = status;
   if (!status) {
@@ -136,10 +149,11 @@ function channelRowHtml(entry, stateMap) {
   const models = (ch.models || []).map(esc).join(", ");
   const latency = formatLatency(st.response_time_ms);
   const enabled = ch.enabled !== false;
+  const authState = channelAuthStateLabel(st);
   return `
     <tr>
       <td class="channel-status-cell">${channelStatusHtml(st, label)}</td>
-      <td>${esc(ch.name || ch.id)}<div class="sub">${esc(ch.id || "")}${ch.auth_type === "codex" ? ` · ${esc(t("channels.authCodexShort"))}` : ""}</div></td>
+      <td>${esc(ch.name || ch.id)}<div class="sub">${esc(ch.id || "")} · ${esc(channelAuthLabel(ch))}${authState ? ` · ${esc(authState)}` : ""}</div></td>
       <td class="mono">${esc(ch.base_url)}</td>
       <td>${ch.priority ?? 0}</td>
       <td>${esc(ch.group || "default")}</td>
@@ -774,29 +788,148 @@ function mappingChannelLabel(channelID) {
   return channel ? `${channel.name || channel.id} (${channel.id})` : channelID;
 }
 
+function channelAuthMethod(ch) {
+  if (ch?.codex_auth_method) return ch.codex_auth_method;
+  if (ch?.auth_type === "none") return "none";
+  if (ch?.auth_type !== "codex" && !ch?.codex_auth) return "api_key";
+  switch (ch?.codex_auth?.auth_mode) {
+    case "oauth":
+      return "codex_oauth";
+    case "refresh_token":
+      return "codex_refresh_token";
+    case "personal_access_token":
+      return "codex_pat";
+    default:
+      return "codex_json";
+  }
+}
+
+function channelAuthLabel(ch) {
+  const key = {
+    none: "channels.authNoneShort",
+    api_key: "channels.authApiKeyShort",
+    codex_oauth: "channels.authCodexOAuthShort",
+    codex_json: "channels.authCodexShort",
+    codex_refresh_token: "channels.authCodexRTShort",
+    codex_pat: "channels.authCodexPATShort",
+  }[channelAuthMethod(ch)] || "channels.authApiKeyShort";
+  return t(key);
+}
+
+function channelAuthStateLabel(state) {
+  const key = {
+    active: "channels.authStatusActive",
+    configured: "channels.authStatusConfigured",
+    expiring: "channels.authStatusExpiring",
+    expired: "channels.authStatusExpired",
+    missing: "channels.authStatusMissing",
+    refresh_required: "channels.authStatusRefreshRequired",
+    not_required: "channels.authStatusNotRequired",
+  }[state?.auth_status];
+  return key ? t(key) : "";
+}
+
+function formatAuthExpiry(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(getLocale() === "zh-CN" ? "zh-CN" : "en-US");
+}
+
+function codexAuthSummaryHtml(ch) {
+  const auth = ch?.codex_auth;
+  if (!auth) return "";
+  const refreshable = Boolean(auth.refresh_token);
+  const details = [
+    auth.email ? `${t("channels.authAccount")}: ${auth.email}` : "",
+    auth.expires_at ? `${t("channels.authExpires")}: ${formatAuthExpiry(auth.expires_at)}` : "",
+  ].filter(Boolean).join(" · ");
+  return `
+    <div class="auth-summary">
+      <div>${esc(details || t("channels.authConfigured"))}</div>
+      ${refreshable ? `<button type="button" class="mini" data-action="refresh-codex-auth">${esc(t("channels.refreshAuth"))}</button>` : ""}
+    </div>`;
+}
+
 function channelFormHtml(ch) {
   ch = ch || {};
-  const authType = ch.auth_type === "codex" || ch.codex_auth ? "codex" : "api_key";
+  const authMethod = channelAuthMethod(ch);
+  const isCodex = authMethod.startsWith("codex_");
   const codexAuthInput = ch.codex_auth_input ?? codexAuthJSON(ch.codex_auth);
-  const baseURL = ch.base_url || (authType === "codex" ? "https://chatgpt.com/backend-api/codex" : "");
+  const baseURL = ch.base_url || (isCodex ? "https://chatgpt.com/backend-api/codex" : "");
+  const placement = ch.api_key_placement || "bearer";
+  const oauthURL = ch.codex_oauth_url || "";
   return `
     <div class="form-section">
       <div class="form-section-title">${esc(t("channels.basic"))}</div>
       <label>${esc(t("columns.name"))}<input name="name" value="${esc(ch.name || "")}" placeholder="${esc(t("channels.namePlaceholder"))}"></label>
       <label>${esc(t("channels.authType"))}
-        <select name="auth_type">
-          <option value="api_key" ${authType === "api_key" ? "selected" : ""}>${esc(t("channels.authApiKey"))}</option>
-          <option value="codex" ${authType === "codex" ? "selected" : ""}>${esc(t("channels.authCodex"))}</option>
+        <select name="auth_method">
+          <option value="api_key" ${authMethod === "api_key" ? "selected" : ""}>${esc(t("channels.authApiKey"))}</option>
+          <option value="none" ${authMethod === "none" ? "selected" : ""}>${esc(t("channels.authNone"))}</option>
+          <option value="codex_oauth" ${authMethod === "codex_oauth" ? "selected" : ""}>${esc(t("channels.authCodexOAuth"))}</option>
+          <option value="codex_json" ${authMethod === "codex_json" ? "selected" : ""}>${esc(t("channels.authCodex"))}</option>
+          <option value="codex_refresh_token" ${authMethod === "codex_refresh_token" ? "selected" : ""}>${esc(t("channels.authCodexRT"))}</option>
+          <option value="codex_pat" ${authMethod === "codex_pat" ? "selected" : ""}>${esc(t("channels.authCodexPAT"))}</option>
         </select>
       </label>
       <label>Base URL *<input name="base_url" value="${esc(baseURL)}" placeholder="https://api.deepseek.com"></label>
-      <div data-auth-panel="api_key" ${authType === "api_key" ? "" : "hidden"}>
+      <div data-auth-panel="api_key" ${authMethod === "api_key" ? "" : "hidden"}>
         <label>API Key<input name="api_key" value="${esc(ch.api_key || "")}" placeholder="sk-..."></label>
+        <div class="grid">
+          <label>${esc(t("channels.apiKeyPlacement"))}
+            <select name="api_key_placement">
+              <option value="bearer" ${placement === "bearer" ? "selected" : ""}>${esc(t("channels.apiKeyBearer"))}</option>
+              <option value="authorization" ${placement === "authorization" ? "selected" : ""}>${esc(t("channels.apiKeyAuthorization"))}</option>
+              <option value="header" ${placement === "header" ? "selected" : ""}>${esc(t("channels.apiKeyHeader"))}</option>
+              <option value="query" ${placement === "query" ? "selected" : ""}>${esc(t("channels.apiKeyQuery"))}</option>
+            </select>
+          </label>
+          <label data-api-key-field="prefix">${esc(t("channels.apiKeyPrefix"))}<input name="api_key_prefix" value="${esc(ch.api_key_prefix ?? (placement === "bearer" ? "Bearer" : ""))}" placeholder="Bearer"></label>
+          <label data-api-key-field="header">${esc(t("channels.apiKeyHeaderName"))}<input name="api_key_header" value="${esc(ch.api_key_header || "X-API-Key")}" placeholder="X-API-Key"></label>
+          <label data-api-key-field="query">${esc(t("channels.apiKeyQueryName"))}<input name="api_key_query" value="${esc(ch.api_key_query || "api_key")}" placeholder="api_key"></label>
+        </div>
+        <small class="field-hint">${esc(t("channels.apiKeyPlacementHint"))}</small>
       </div>
-      <div data-auth-panel="codex" ${authType === "codex" ? "" : "hidden"}>
+      <div data-auth-panel="none" ${authMethod === "none" ? "" : "hidden"}>
+        <div class="auth-note">${esc(t("channels.authNoneHint"))}</div>
+      </div>
+      <div data-auth-panel="codex_oauth" ${authMethod === "codex_oauth" ? "" : "hidden"}>
+        ${codexAuthSummaryHtml(ch)}
+        <div class="auth-note">${esc(t("channels.codexOAuthHint"))}</div>
+        <div class="oauth-actions">
+          <button type="button" class="mini" data-action="start-codex-oauth">${esc(t("channels.generateAuthURL"))}</button>
+          <button type="button" class="mini" data-action="open-codex-oauth" ${oauthURL ? "" : "disabled"}>${esc(t("channels.openAuthURL"))}</button>
+          <button type="button" class="mini" data-action="copy-codex-oauth" ${oauthURL ? "" : "disabled"}>${esc(t("actions.copy"))}</button>
+        </div>
+        <input type="hidden" name="codex_oauth_session" value="${esc(ch.codex_oauth_session || "")}">
+        <input type="hidden" name="codex_oauth_state" value="${esc(ch.codex_oauth_state || "")}">
+        <textarea name="codex_oauth_url" rows="3" readonly placeholder="${esc(t("channels.authURLPlaceholder"))}">${esc(oauthURL)}</textarea>
+        <label>${esc(t("channels.oauthCallback"))}
+          <textarea name="codex_oauth_callback" rows="4" placeholder="${esc(t("channels.oauthCallbackPlaceholder"))}">${esc(ch.codex_oauth_callback || "")}</textarea>
+          <small class="field-hint">${esc(t("channels.oauthCallbackHint"))}</small>
+        </label>
+      </div>
+      <div data-auth-panel="codex_json" ${authMethod === "codex_json" ? "" : "hidden"}>
+        ${codexAuthSummaryHtml(ch)}
         <label>${esc(t("channels.codexJson"))}
           <textarea name="codex_auth_input" rows="8" placeholder='{"tokens":{"access_token":"...","refresh_token":"..."}}'>${esc(codexAuthInput)}</textarea>
           <small class="field-hint">${esc(t("channels.codexJsonHint"))}</small>
+        </label>
+      </div>
+      <div data-auth-panel="codex_refresh_token" ${authMethod === "codex_refresh_token" ? "" : "hidden"}>
+        ${codexAuthSummaryHtml(ch)}
+        <label>${esc(t("channels.codexRefreshToken"))}
+          <textarea name="codex_refresh_token" rows="4" placeholder="${esc(t("channels.codexRefreshTokenPlaceholder"))}">${esc(ch.codex_refresh_token || "")}</textarea>
+          <small class="field-hint">${esc(t("channels.codexRefreshTokenHint"))}</small>
+        </label>
+        <label>${esc(t("channels.codexClientID"))}<input name="codex_client_id" value="${esc(ch.codex_client_id || ch.codex_auth?.client_id || "")}" placeholder="app_..."></label>
+      </div>
+      <div data-auth-panel="codex_pat" ${authMethod === "codex_pat" ? "" : "hidden"}>
+        ${codexAuthSummaryHtml(ch)}
+        <label>${esc(t("channels.codexPAT"))}
+          <input name="codex_pat" value="${esc(ch.codex_pat || "")}" placeholder="at-...">
+          <small class="field-hint">${esc(t("channels.codexPATHint"))}</small>
         </label>
       </div>
     </div>
@@ -805,10 +938,10 @@ function channelFormHtml(ch) {
       <div class="field">
         <div class="field-head">
           <span class="field-title">${esc(t("channels.availableModels"))}</span>
-          <button type="button" class="mini" data-action="fetch-models" ${authType === "codex" ? "hidden" : ""}>${esc(t("actions.update"))}</button>
+          <button type="button" class="mini" data-action="fetch-models" ${isCodex ? "hidden" : ""}>${esc(t("actions.update"))}</button>
         </div>
-        <textarea name="models" rows="4" placeholder="${authType === "codex" ? "*" : "deepseek-chat"}">${esc((ch.models || (authType === "codex" ? ["*"] : [])).join("\n"))}</textarea>
-        <small class="field-hint" data-models-hint>${esc(t(authType === "codex" ? "channels.codexModelsHint" : "channels.modelsHint"))}</small>
+        <textarea name="models" rows="4" placeholder="${isCodex ? "*" : "deepseek-chat"}">${esc((ch.models || (isCodex ? ["*"] : [])).join("\n"))}</textarea>
+        <small class="field-hint" data-models-hint>${esc(t(isCodex ? "channels.codexModelsHint" : "channels.modelsHint"))}</small>
       </div>
     </div>
     <div class="form-section">
@@ -891,6 +1024,7 @@ function openTokenEditForm(id) {
 function codexAuthJSON(auth) {
   if (!auth) return "";
   return JSON.stringify({
+    auth_mode: auth.auth_mode || "",
     tokens: {
       access_token: auth.access_token || "",
       refresh_token: auth.refresh_token || "",
@@ -907,22 +1041,34 @@ function codexAuthJSON(auth) {
 
 function syncChannelAuthPanels() {
   if (modalType !== "channel") return;
-  const authType = els.modalBody.querySelector('[name="auth_type"]')?.value || "api_key";
+  const authMethod = els.modalBody.querySelector('[name="auth_method"]')?.value || "api_key";
+  const isCodex = authMethod.startsWith("codex_");
   els.modalBody.querySelectorAll("[data-auth-panel]").forEach((panel) => {
-    panel.hidden = panel.dataset.authPanel !== authType;
+    panel.hidden = panel.dataset.authPanel !== authMethod;
   });
   const fetchButton = els.modalBody.querySelector('[data-action="fetch-models"]');
-  if (fetchButton) fetchButton.hidden = authType === "codex";
+  if (fetchButton) fetchButton.hidden = isCodex;
   const hint = els.modalBody.querySelector("[data-models-hint]");
-  if (hint) hint.textContent = t(authType === "codex" ? "channels.codexModelsHint" : "channels.modelsHint");
+  if (hint) hint.textContent = t(isCodex ? "channels.codexModelsHint" : "channels.modelsHint");
   const baseField = els.modalBody.querySelector('[name="base_url"]');
-  if (authType === "codex" && baseField && !baseField.value.trim()) {
+  if (isCodex && baseField && !baseField.value.trim()) {
     baseField.value = "https://chatgpt.com/backend-api/codex";
   }
   const modelsField = els.modalBody.querySelector('[name="models"]');
-  if (authType === "codex" && modelsField && !modelsField.value.trim()) {
+  if (isCodex && modelsField && !modelsField.value.trim()) {
     modelsField.value = "*";
   }
+  syncAPIKeyFields();
+}
+
+function syncAPIKeyFields() {
+  const placement = els.modalBody.querySelector('[name="api_key_placement"]')?.value || "bearer";
+  els.modalBody.querySelectorAll("[data-api-key-field]").forEach((field) => {
+    const kind = field.dataset.apiKeyField;
+    field.hidden = (kind === "header" && placement !== "header")
+      || (kind === "query" && placement !== "query")
+      || (kind === "prefix" && placement === "query");
+  });
 }
 
 function collectChannelDraft() {
@@ -932,14 +1078,27 @@ function collectChannelDraft() {
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
+  const authMethod = val("auth_method") || "api_key";
   return {
     id: modalId >= 0 ? (config.channels[modalId]?.id || "") : "",
     name: val("name"),
     base_url: val("base_url"),
-    auth_type: val("auth_type") || "api_key",
+    auth_type: authMethod === "none" ? "none" : (authMethod.startsWith("codex_") ? "codex" : "api_key"),
+    codex_auth_method: authMethod,
     api_key: val("api_key"),
+    api_key_placement: val("api_key_placement") || "bearer",
+    api_key_header: val("api_key_header"),
+    api_key_prefix: val("api_key_prefix"),
+    api_key_query: val("api_key_query"),
     codex_auth: modalId >= 0 ? config.channels[modalId]?.codex_auth : undefined,
     codex_auth_input: val("codex_auth_input"),
+    codex_refresh_token: val("codex_refresh_token"),
+    codex_client_id: val("codex_client_id"),
+    codex_pat: val("codex_pat"),
+    codex_oauth_session: val("codex_oauth_session"),
+    codex_oauth_state: val("codex_oauth_state"),
+    codex_oauth_url: val("codex_oauth_url"),
+    codex_oauth_callback: val("codex_oauth_callback"),
     models,
     model_mappings: modalId >= 0 ? (config.channels[modalId]?.model_mappings || {}) : {},
     priority: parseInt(val("priority") || "0", 10),
@@ -952,33 +1111,73 @@ function collectChannelDraft() {
 async function collectChannelForm() {
   const ch = collectChannelDraft();
   if (ch.auth_type === "codex") {
-    if (!ch.codex_auth_input) {
-      toast(t("channels.codexJsonRequired"));
-      return null;
-    }
+    const existingAuth = modalId >= 0 ? config.channels[modalId]?.codex_auth : null;
     try {
-      const res = await fetch(`${baseUrl}/api/parse_codex_auth`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: ch.codex_auth_input }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        toast(t("channels.codexJsonInvalid", { error: data.error || res.status }));
+      let res;
+      if (ch.codex_auth_method === "codex_oauth" && ch.codex_oauth_callback) {
+        res = await fetch(`${baseUrl}/api/codex/oauth/exchange`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: ch.codex_oauth_session,
+            state: ch.codex_oauth_state,
+            code: ch.codex_oauth_callback,
+          }),
+        });
+      } else if (ch.codex_auth_method === "codex_json" && ch.codex_auth_input) {
+        res = await fetch(`${baseUrl}/api/parse_codex_auth`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: ch.codex_auth_input }),
+        });
+      } else if (ch.codex_auth_method === "codex_refresh_token" && ch.codex_refresh_token) {
+        res = await fetch(`${baseUrl}/api/codex/refresh-token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: ch.codex_refresh_token, client_id: ch.codex_client_id }),
+        });
+      } else if (ch.codex_auth_method === "codex_pat" && ch.codex_pat) {
+        res = await fetch(`${baseUrl}/api/codex/pat/validate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ access_token: ch.codex_pat }),
+        });
+      } else if (existingAuth && ch.codex_auth_method === channelAuthMethod(config.channels[modalId])) {
+        ch.codex_auth = existingAuth;
+      } else {
+        toast(t("channels.codexCredentialRequired"));
         return null;
       }
-      ch.codex_auth = data.auth;
+      if (!res) {
+        ch.codex_auth ||= existingAuth;
+      } else {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          toast(t("channels.codexAuthInvalid", { error: data.error || res.status }));
+          return null;
+        }
+        ch.codex_auth = data.auth;
+      }
       ch.api_key = "";
       ch.base_url ||= "https://chatgpt.com/backend-api/codex";
       if (!ch.models.length) ch.models = ["*"];
     } catch {
-      toast(t("channels.codexJsonInvalid", { error: t("common.routerUnavailable") }));
+      toast(t("channels.codexAuthInvalid", { error: t("common.routerUnavailable") }));
       return null;
     }
   } else {
     delete ch.codex_auth;
+    if (ch.auth_type === "none") ch.api_key = "";
   }
+  delete ch.codex_auth_method;
   delete ch.codex_auth_input;
+  delete ch.codex_refresh_token;
+  delete ch.codex_client_id;
+  delete ch.codex_pat;
+  delete ch.codex_oauth_session;
+  delete ch.codex_oauth_state;
+  delete ch.codex_oauth_url;
+  delete ch.codex_oauth_callback;
   return ch;
 }
 
@@ -993,7 +1192,8 @@ function collectMappingForm() {
 }
 
 async function fetchModelsFromForm() {
-  if ((els.modalBody.querySelector('[name="auth_type"]')?.value || "api_key") === "codex") {
+  const authMethod = els.modalBody.querySelector('[name="auth_method"]')?.value || "api_key";
+  if (authMethod.startsWith("codex_")) {
     return;
   }
   const base = (els.modalBody.querySelector('[name="base_url"]')?.value || "").trim();
@@ -1008,7 +1208,15 @@ async function fetchModelsFromForm() {
     const res = await fetch(`${baseUrl}/api/probe_models`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ base_url: base, api_key: apiKey }),
+      body: JSON.stringify({
+        base_url: base,
+        auth_type: authMethod === "none" ? "none" : "api_key",
+        api_key: apiKey,
+        api_key_placement: (els.modalBody.querySelector('[name="api_key_placement"]')?.value || "bearer"),
+        api_key_header: (els.modalBody.querySelector('[name="api_key_header"]')?.value || "").trim(),
+        api_key_prefix: (els.modalBody.querySelector('[name="api_key_prefix"]')?.value || "").trim(),
+        api_key_query: (els.modalBody.querySelector('[name="api_key_query"]')?.value || "").trim(),
+      }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -1019,6 +1227,58 @@ async function fetchModelsFromForm() {
     toast(t("channels.fetchSuccess", { count: (data.models || []).length }));
   } catch {
     toast(t("channels.fetchError"));
+  }
+}
+
+async function startCodexOAuth() {
+  toast(t("channels.generatingAuthURL"));
+  try {
+    const res = await fetch(`${baseUrl}/api/codex/oauth/start`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(t("channels.codexAuthInvalid", { error: data.error || res.status }));
+      return;
+    }
+    const set = (name, value) => {
+      const field = els.modalBody.querySelector(`[name="${name}"]`);
+      if (field) field.value = value || "";
+    };
+    set("codex_oauth_session", data.session_id);
+    set("codex_oauth_state", data.state);
+    set("codex_oauth_url", data.auth_url);
+    els.modalBody.querySelectorAll('[data-action="open-codex-oauth"], [data-action="copy-codex-oauth"]').forEach((button) => {
+      button.disabled = false;
+    });
+    toast(t("channels.authURLReady"));
+    await openExternal(data.auth_url);
+  } catch {
+    toast(t("channels.codexAuthInvalid", { error: t("common.routerUnavailable") }));
+  }
+}
+
+async function refreshCodexAuthorization() {
+  if (modalId < 0) {
+    toast(t("channels.saveBeforeRefresh"));
+    return;
+  }
+  const channel = config.channels?.[modalId];
+  if (!channel?.id) return;
+  toast(t("channels.refreshingAuth"));
+  try {
+    const res = await fetch(`${baseUrl}/api/codex/refresh/${encodeURIComponent(channel.id)}`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(t("channels.codexAuthInvalid", { error: data.error || res.status }));
+      return;
+    }
+    const draft = collectChannelDraft();
+    draft.codex_auth = data.auth;
+    config.channels[modalId].codex_auth = data.auth;
+    els.modalBody.innerHTML = channelFormHtml(draft);
+    syncChannelAuthPanels();
+    toast(t("channels.authRefreshed"));
+  } catch {
+    toast(t("channels.codexAuthInvalid", { error: t("common.routerUnavailable") }));
   }
 }
 
@@ -1136,6 +1396,14 @@ async function handleAction(action, target) {
   }
   if (action === "edit-mapping") return openMappingForm(index);
   if (action === "fetch-models") return fetchModelsFromForm();
+  if (action === "start-codex-oauth") return startCodexOAuth();
+  if (action === "open-codex-oauth") {
+    return openExternal(els.modalBody.querySelector('[name="codex_oauth_url"]')?.value || "");
+  }
+  if (action === "copy-codex-oauth") {
+    return copyText(els.modalBody.querySelector('[name="codex_oauth_url"]')?.value || "");
+  }
+  if (action === "refresh-codex-auth") return refreshCodexAuthorization();
   if (action === "delete-group") {
     const idx = Number(target.dataset.index);
     const groups = config.groups || [];
@@ -1428,8 +1696,12 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   document.addEventListener("change", (e) => {
-    if (e.target.matches('#modal-body [name="auth_type"]')) {
+    if (e.target.matches('#modal-body [name="auth_method"]')) {
       syncChannelAuthPanels();
+      return;
+    }
+    if (e.target.matches('#modal-body [name="api_key_placement"]')) {
+      syncAPIKeyFields();
       return;
     }
     const input = e.target.closest('[data-action="group-priority"]');

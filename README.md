@@ -7,7 +7,8 @@ MKSwitch is a cross-platform desktop application for routing local AI model requ
 ## Features
 
 - Graphical management for channels, groups, priorities, model mappings, and access tokens
-- Channels can use an API key or imported Codex `auth.json` authorization with automatic OAuth token refresh
+- Channels support no auth, Bearer/custom-header/query API keys, and Codex browser OAuth, `auth.json` / AT, RT, and PAT credentials
+- Codex OAuth credentials support automatic rotation and manual refresh, with account and expiry status shown in channel management
 - Channel health checks, retries, and automatic failover
 - Client model names can be mapped to different upstream model names
 - OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, and `/v1/models` endpoints
@@ -54,6 +55,15 @@ The Windows portable edition does not require installation, but unsigned executa
 4. Set the client Base URL to `http://127.0.0.1:8787/v1` and provide the generated access token.
 
 A model mapping can target one channel or **All** channels. When **All** is selected, only channels whose available-model list contains the mapped upstream model are eligible.
+
+When adding or editing a channel, the following authorization methods are available:
+
+- **API Key**: send as `Authorization: Bearer`, raw `Authorization`, a custom header, or a query parameter.
+- **No authorization**: for local services or trusted upstreams that explicitly require no credential.
+- **Codex browser OAuth**: generate a PKCE authorization URL and paste the localhost callback URL after sign-in.
+- **Codex auth.json / Access Token**: import either a complete JSON document or a raw AT.
+- **Codex Refresh Token**: exchange and validate before save, then maintain rotated credentials automatically.
+- **Codex PAT**: validate an `at-` Personal Access Token and load its account identity; PAT credentials are not refreshable.
 
 ## Development
 
@@ -112,7 +122,7 @@ Desktop application data is stored in the system application configuration direc
 %APPDATA%\cc.minki.mkswitch\
 ```
 
-`config.json` contains upstream API keys, Codex OAuth authorization, and local access tokens. `usage.json` contains local usage records. Do not commit or share these files.
+`config.json` contains upstream API keys, Codex OAuth/PAT authorization, and local access tokens. `usage.json` contains local usage records. Do not commit or share these files.
 
 MKSwitch listens on `127.0.0.1` by default. When LAN access is enabled, keep token authentication enabled and only use the application on trusted networks. MKSwitch does not upload configuration or usage records by itself; proxied requests are still sent to the upstream services you configure.
 

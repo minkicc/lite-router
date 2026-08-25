@@ -40,6 +40,11 @@ type ChannelState struct {
 	Price                float64           `json:"price"`
 	Enabled              bool              `json:"enabled"`
 	APIKeySet            bool              `json:"api_key_set"`
+	AuthStatus           string            `json:"auth_status,omitempty"`
+	AuthEmail            string            `json:"auth_email,omitempty"`
+	AuthExpiresAt        string            `json:"auth_expires_at,omitempty"`
+	AuthRefreshable      bool              `json:"auth_refreshable,omitempty"`
+	AuthMode             string            `json:"auth_mode,omitempty"`
 	Status               HealthStatus      `json:"status"`
 	ResponseTimeMS       int64             `json:"response_time_ms"`
 	ConsecutiveFailures  int               `json:"consecutive_failures"`
@@ -320,9 +325,7 @@ func (e *Engine) probe(ch config.Channel, path string, timeoutSeconds int) (int,
 	if err != nil {
 		return 0, 0, err
 	}
-	if strings.TrimSpace(ch.APIKey) != "" {
-		req.Header.Set("Authorization", "Bearer "+ch.APIKey)
-	}
+	ch.ApplyAPIKeyAuthorization(req)
 	if ch.IsCodexAuth() && ch.CodexAuth != nil {
 		auth := *ch.CodexAuth
 		auth.Normalize()
@@ -505,9 +508,45 @@ func (e *Engine) State() []ChannelState {
 			CooldownCount:        rt.health.consecutiveCooldowns,
 			CooldownDuration:     int64(cooldownDuration(rt.health.consecutiveCooldowns) / time.Second),
 		}
+		st.AuthStatus, st.AuthEmail, st.AuthExpiresAt, st.AuthRefreshable, st.AuthMode = channelAuthorizationState(ch)
 		out = append(out, st)
 	}
 	return out
+}
+
+func channelAuthorizationState(ch config.Channel) (status, email, expiresAt string, refreshable bool, mode string) {
+	switch {
+	case ch.IsNoAuth():
+		return "not_required", "", "", false, config.ChannelAuthNone
+	case ch.IsCodexAuth():
+		if ch.CodexAuth == nil {
+			return "missing", "", "", false, config.ChannelAuthCodex
+		}
+		auth := *ch.CodexAuth
+		auth.Normalize()
+		status = "configured"
+		if expiry, ok := auth.ExpiresAtTime(); ok {
+			expiresAt = expiry.Format(time.RFC3339)
+			switch {
+			case !time.Now().Before(expiry):
+				status = "expired"
+			case time.Until(expiry) <= 10*time.Minute:
+				status = "expiring"
+			default:
+				status = "active"
+			}
+		} else if auth.AccessToken == "" {
+			status = "refresh_required"
+		} else {
+			status = "active"
+		}
+		return status, auth.Email, expiresAt, auth.RefreshToken != "", auth.AuthMode
+	default:
+		if strings.TrimSpace(ch.APIKey) == "" {
+			return "missing", "", "", false, config.ChannelAuthAPIKey
+		}
+		return "configured", "", "", false, ch.APIKeyPlacement
+	}
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

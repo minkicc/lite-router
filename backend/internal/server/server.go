@@ -3,6 +3,11 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,21 +31,26 @@ import (
 const maxRequestBody = 64 << 20
 
 const (
-	codexOAuthTokenURL  = "https://auth.openai.com/oauth/token"
-	codexRefreshSkew    = 3 * time.Minute
-	codexDefaultVersion = "0.146.0"
-	codexDefaultUA      = "codex-tui/" + codexDefaultVersion + " (Windows 11; x86_64) WindowsTerminal"
+	codexOAuthAuthorizeURL = "https://auth.openai.com/oauth/authorize"
+	codexOAuthTokenURL     = "https://auth.openai.com/oauth/token"
+	codexPATWhoAmIURL      = "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami"
+	codexOAuthRedirectURI  = "http://localhost:1455/auth/callback"
+	codexOAuthSessionTTL   = 30 * time.Minute
+	codexRefreshSkew       = 3 * time.Minute
+	codexDefaultVersion    = "0.146.0"
+	codexDefaultUA         = "codex-tui/" + codexDefaultVersion + " (Windows 11; x86_64) WindowsTerminal"
 )
 
 type Server struct {
-	engine            *engine.Engine
-	cfgPath           string
-	ui                http.Handler
-	logger            *log.Logger
-	saveMu            sync.Mutex
-	usage             *usageStore
-	codex             *codex.Service
-	codexRefreshLocks sync.Map
+	engine             *engine.Engine
+	cfgPath            string
+	ui                 http.Handler
+	logger             *log.Logger
+	saveMu             sync.Mutex
+	usage              *usageStore
+	codex              *codex.Service
+	codexRefreshLocks  sync.Map
+	codexOAuthSessions sync.Map
 }
 
 type usageInfo struct {
@@ -73,6 +83,13 @@ type codex401RefreshStateKey struct{}
 
 type codex401RefreshState struct {
 	attempted map[string]bool
+}
+
+type codexOAuthSession struct {
+	State        string
+	CodeVerifier string
+	RedirectURI  string
+	CreatedAt    time.Time
 }
 
 func beginCodex401Refresh(ctx context.Context, channelID string) bool {
@@ -121,6 +138,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.handlePutConfig)
 	mux.HandleFunc("POST /api/probe_models", s.handleProbeModels)
 	mux.HandleFunc("POST /api/parse_codex_auth", s.handleParseCodexAuth)
+	mux.HandleFunc("POST /api/codex/oauth/start", s.handleCodexOAuthStart)
+	mux.HandleFunc("POST /api/codex/oauth/exchange", s.handleCodexOAuthExchange)
+	mux.HandleFunc("POST /api/codex/refresh-token", s.handleCodexRefreshToken)
+	mux.HandleFunc("POST /api/codex/pat/validate", s.handleCodexPATValidate)
+	mux.HandleFunc("POST /api/codex/refresh/{id}", s.handleCodexRefreshChannel)
 	mux.HandleFunc("GET /api/tokens", s.handleListTokens)
 	mux.HandleFunc("POST /api/tokens", s.handleCreateToken)
 	mux.HandleFunc("PUT /api/tokens/{id}", s.handleUpdateToken)
@@ -367,9 +389,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, selection *engi
 		return true, usageInfo{}, &retryDecisionError{err: err, same: false}
 	}
 	copyRequestHeaders(req.Header, r.Header)
-	if strings.TrimSpace(ch.APIKey) != "" {
-		req.Header.Set("Authorization", "Bearer "+ch.APIKey)
-	}
+	ch.ApplyAPIKeyAuthorization(req)
 	for k, v := range ch.Headers {
 		req.Header.Set(k, v)
 	}
@@ -1083,8 +1103,13 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleProbeModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
+		BaseURL         string `json:"base_url"`
+		AuthType        string `json:"auth_type"`
+		APIKey          string `json:"api_key"`
+		APIKeyPlacement string `json:"api_key_placement"`
+		APIKeyHeader    string `json:"api_key_header"`
+		APIKeyPrefix    string `json:"api_key_prefix"`
+		APIKeyQuery     string `json:"api_key_query"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -1095,7 +1120,19 @@ func (s *Server) handleProbeModels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "base_url is required"})
 		return
 	}
-	models, err := s.fetchUpstreamModels(req.BaseURL, strings.TrimSpace(req.APIKey))
+	channel := config.Channel{
+		BaseURL:         req.BaseURL,
+		AuthType:        req.AuthType,
+		APIKey:          strings.TrimSpace(req.APIKey),
+		APIKeyPlacement: req.APIKeyPlacement,
+		APIKeyHeader:    req.APIKeyHeader,
+		APIKeyPrefix:    req.APIKeyPrefix,
+		APIKeyQuery:     req.APIKeyQuery,
+	}
+	if channel.AuthType == "" {
+		channel.AuthType = config.ChannelAuthAPIKey
+	}
+	models, err := s.fetchUpstreamModels(channel)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
@@ -1111,12 +1148,275 @@ func (s *Server) handleParseCodexAuth(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	auth, err := config.ParseCodexAuthJSON(req.Content)
+	auth, err := config.ParseCodexAuthInput(req.Content)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"auth": auth})
+}
+
+func (s *Server) handleCodexOAuthStart(w http.ResponseWriter, r *http.Request) {
+	state, err := randomHex(32)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	sessionID, err := randomHex(16)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	codeVerifier, err := randomHex(64)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	session := &codexOAuthSession{
+		State:        state,
+		CodeVerifier: codeVerifier,
+		RedirectURI:  codexOAuthRedirectURI,
+		CreatedAt:    time.Now(),
+	}
+	s.codexOAuthSessions.Store(sessionID, session)
+	s.deleteExpiredCodexOAuthSessions()
+
+	challengeHash := sha256.Sum256([]byte(codeVerifier))
+	params := url.Values{}
+	params.Set("response_type", "code")
+	params.Set("client_id", config.CodexClientID)
+	params.Set("redirect_uri", session.RedirectURI)
+	params.Set("scope", "openid profile email offline_access")
+	params.Set("state", state)
+	params.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challengeHash[:]))
+	params.Set("code_challenge_method", "S256")
+	params.Set("id_token_add_organizations", "true")
+	params.Set("codex_cli_simplified_flow", "true")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"auth_url":   codexOAuthAuthorizeURL + "?" + params.Encode(),
+		"session_id": sessionID,
+		"state":      state,
+		"expires_at": session.CreatedAt.Add(codexOAuthSessionTTL).Unix(),
+	})
+}
+
+func (s *Server) handleCodexOAuthExchange(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string `json:"session_id"`
+		Code      string `json:"code"`
+		State     string `json:"state"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	value, ok := s.codexOAuthSessions.Load(strings.TrimSpace(req.SessionID))
+	session, sessionOK := value.(*codexOAuthSession)
+	if !ok || !sessionOK || time.Since(session.CreatedAt) > codexOAuthSessionTTL {
+		if req.SessionID != "" {
+			s.codexOAuthSessions.Delete(strings.TrimSpace(req.SessionID))
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Codex OAuth session not found or expired"})
+		return
+	}
+	code, callbackState := parseOAuthCallbackInput(req.Code)
+	state := strings.TrimSpace(req.State)
+	if callbackState != "" {
+		state = callbackState
+	}
+	if code == "" || state == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "authorization code and state are required"})
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(state), []byte(session.State)) != 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Codex OAuth state does not match the current authorization session"})
+		return
+	}
+	auth, err := s.exchangeCodexAuthorizationCode(r.Context(), code, session)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	s.codexOAuthSessions.Delete(strings.TrimSpace(req.SessionID))
+	writeJSON(w, http.StatusOK, map[string]any{"auth": auth})
+}
+
+func (s *Server) handleCodexRefreshToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+		ClientID     string `json:"client_id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	refreshToken := strings.TrimSpace(req.RefreshToken)
+	if refreshToken == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "refresh_token is required"})
+		return
+	}
+	auth := &config.CodexAuth{
+		AuthMode:     config.CodexAuthModeRefreshToken,
+		RefreshToken: refreshToken,
+		ClientID:     strings.TrimSpace(req.ClientID),
+		UpdatedAt:    time.Now().UnixMilli(),
+	}
+	auth.Normalize()
+	refreshed, err := s.refreshCodexAuth(r.Context(), auth)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	refreshed.AuthMode = config.CodexAuthModeRefreshToken
+	writeJSON(w, http.StatusOK, map[string]any{"auth": refreshed})
+}
+
+func (s *Server) handleCodexPATValidate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	auth, err := s.validateCodexPAT(r.Context(), req.AccessToken)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"auth": auth})
+}
+
+func (s *Server) handleCodexRefreshChannel(w http.ResponseWriter, r *http.Request) {
+	channelID := strings.TrimSpace(r.PathValue("id"))
+	_, current, err := codexAuthFromConfig(s.engine.Config(), channelID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(current.RefreshToken) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "this Codex authorization has no refresh_token"})
+		return
+	}
+	auth, err := s.ensureCodexAuthCurrent(r.Context(), channelID, "", true)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"auth": auth})
+}
+
+func randomHex(size int) (string, error) {
+	data := make([]byte, size)
+	if _, err := rand.Read(data); err != nil {
+		return "", fmt.Errorf("generate secure random value: %w", err)
+	}
+	return hex.EncodeToString(data), nil
+}
+
+func parseOAuthCallbackInput(input string) (code, state string) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", ""
+	}
+	if parsed, err := url.Parse(input); err == nil && parsed.RawQuery != "" {
+		if value := strings.TrimSpace(parsed.Query().Get("code")); value != "" {
+			return value, strings.TrimSpace(parsed.Query().Get("state"))
+		}
+	}
+	if strings.Contains(input, "code=") {
+		raw := strings.TrimPrefix(input, "?")
+		if values, err := url.ParseQuery(raw); err == nil {
+			if value := strings.TrimSpace(values.Get("code")); value != "" {
+				return value, strings.TrimSpace(values.Get("state"))
+			}
+		}
+	}
+	return input, ""
+}
+
+func (s *Server) deleteExpiredCodexOAuthSessions() {
+	now := time.Now()
+	s.codexOAuthSessions.Range(func(key, value any) bool {
+		session, ok := value.(*codexOAuthSession)
+		if !ok || now.Sub(session.CreatedAt) > codexOAuthSessionTTL {
+			s.codexOAuthSessions.Delete(key)
+		}
+		return true
+	})
+}
+
+func (s *Server) exchangeCodexAuthorizationCode(ctx context.Context, code string, session *codexOAuthSession) (*config.CodexAuth, error) {
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("client_id", config.CodexClientID)
+	form.Set("code", strings.TrimSpace(code))
+	form.Set("redirect_uri", session.RedirectURI)
+	form.Set("code_verifier", session.CodeVerifier)
+	auth, err := s.requestCodexToken(ctx, form)
+	if err != nil {
+		return nil, fmt.Errorf("exchange Codex OAuth authorization code: %w", err)
+	}
+	auth.AuthMode = config.CodexAuthModeOAuth
+	auth.Normalize()
+	return auth, nil
+}
+
+func (s *Server) validateCodexPAT(ctx context.Context, accessToken string) (*config.CodexAuth, error) {
+	accessToken = strings.TrimSpace(accessToken)
+	if !strings.HasPrefix(accessToken, "at-") {
+		return nil, errors.New("Codex Personal Access Token must start with at-")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexPATWhoAmIURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", codexDefaultUA)
+	req.Header.Set("Originator", "codex-tui")
+	req.Header.Set("Version", codexDefaultVersion)
+	resp, err := s.engine.ProxyClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("validate Codex Personal Access Token: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read Codex Personal Access Token validation response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, message, detail := codexErrorDetails(body)
+		if message == "" {
+			message = detail
+		}
+		if message == "" {
+			message = http.StatusText(resp.StatusCode)
+		}
+		return nil, fmt.Errorf("Codex Personal Access Token validation returned status %d: %s", resp.StatusCode, message)
+	}
+	var whoami struct {
+		Email            string `json:"email"`
+		ChatGPTUserID    string `json:"chatgpt_user_id"`
+		ChatGPTAccountID string `json:"chatgpt_account_id"`
+	}
+	if err := json.Unmarshal(body, &whoami); err != nil {
+		return nil, fmt.Errorf("parse Codex Personal Access Token validation response: %w", err)
+	}
+	if strings.TrimSpace(whoami.ChatGPTAccountID) == "" {
+		return nil, errors.New("Codex Personal Access Token validation response is missing chatgpt_account_id")
+	}
+	auth := &config.CodexAuth{
+		AuthMode:    config.CodexAuthModePersonalAccessToken,
+		AccessToken: accessToken,
+		AccountID:   whoami.ChatGPTAccountID,
+		UserID:      whoami.ChatGPTUserID,
+		Email:       whoami.Email,
+		ClientID:    config.CodexClientID,
+		UpdatedAt:   time.Now().UnixMilli(),
+	}
+	auth.Normalize()
+	return auth, nil
 }
 
 func upstreamTarget(ch config.Channel, path string) string {
@@ -1457,7 +1757,36 @@ func (s *Server) refreshCodexAuth(ctx context.Context, current *config.CodexAuth
 	form.Set("refresh_token", current.RefreshToken)
 	form.Set("client_id", clientID)
 	form.Set("scope", "openid profile email")
+	token, err := s.requestCodexToken(ctx, form)
+	if err != nil {
+		return nil, fmt.Errorf("refresh Codex authorization: %w", err)
+	}
 
+	next := *current
+	next.AccessToken = token.AccessToken
+	if token.RefreshToken != "" {
+		next.RefreshToken = token.RefreshToken
+	}
+	if token.IDToken != "" {
+		next.IDToken = token.IDToken
+	}
+	next.ClientID = clientID
+	if token.AccountID != "" {
+		next.AccountID = token.AccountID
+	}
+	if token.UserID != "" {
+		next.UserID = token.UserID
+	}
+	if token.Email != "" {
+		next.Email = token.Email
+	}
+	next.ExpiresAt = token.ExpiresAt
+	next.UpdatedAt = time.Now().UnixMilli()
+	next.Normalize()
+	return &next, nil
+}
+
+func (s *Server) requestCodexToken(ctx context.Context, form url.Values) (*config.CodexAuth, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexOAuthTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
@@ -1468,12 +1797,12 @@ func (s *Server) refreshCodexAuth(ctx context.Context, current *config.CodexAuth
 
 	resp, err := s.engine.ProxyClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("refresh Codex authorization: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if readErr != nil {
-		return nil, fmt.Errorf("read Codex refresh response: %w", readErr)
+		return nil, fmt.Errorf("read token response: %w", readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		code, message, detail := codexErrorDetails(body)
@@ -1493,58 +1822,37 @@ func (s *Server) refreshCodexAuth(ctx context.Context, current *config.CodexAuth
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &token); err != nil {
-		return nil, fmt.Errorf("parse Codex refresh response: %w", err)
+		return nil, fmt.Errorf("parse token response: %w", err)
 	}
 	if strings.TrimSpace(token.AccessToken) == "" {
-		return nil, errors.New("Codex refresh response is missing access_token")
+		return nil, errors.New("Codex token response is missing access_token")
 	}
-	next := *current
-	next.AccessToken = token.AccessToken
-	if strings.TrimSpace(token.RefreshToken) != "" {
-		next.RefreshToken = token.RefreshToken
-	}
-	if strings.TrimSpace(token.IDToken) != "" {
-		next.IDToken = token.IDToken
-	}
-	next.ClientID = clientID
-	identity := &config.CodexAuth{
-		AccessToken: token.AccessToken,
-		IDToken:     token.IDToken,
-	}
-	identity.Normalize()
-	if identity.AccountID != "" {
-		next.AccountID = identity.AccountID
-	}
-	if identity.UserID != "" {
-		next.UserID = identity.UserID
-	}
-	if identity.Email != "" {
-		next.Email = identity.Email
+	auth := &config.CodexAuth{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		IDToken:      token.IDToken,
+		ClientID:     strings.TrimSpace(form.Get("client_id")),
+		UpdatedAt:    time.Now().UnixMilli(),
 	}
 	if token.ExpiresIn > 0 {
-		next.ExpiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
-	} else {
-		next.ExpiresAt = identity.ExpiresAt
+		auth.ExpiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
 	}
-	next.UpdatedAt = time.Now().UnixMilli()
-	next.Normalize()
-	return &next, nil
+	auth.Normalize()
+	return auth, nil
 }
 
-func (s *Server) fetchUpstreamModels(baseURL, apiKey string) ([]string, error) {
+func (s *Server) fetchUpstreamModels(channel config.Channel) ([]string, error) {
 	paths := []string{"/v1/models", "/models"}
 	var lastErr error
 	for _, path := range paths {
-		target := engine.BuildURL(baseURL, path)
+		target := engine.BuildURL(channel.BaseURL, path)
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
-		if apiKey != "" {
-			req.Header.Set("Authorization", "Bearer "+apiKey)
-		}
+		channel.ApplyAPIKeyAuthorization(req)
 		resp, err := s.engine.ProxyClient().Do(req)
 		if err != nil {
 			cancel()

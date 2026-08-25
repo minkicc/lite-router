@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,22 +20,26 @@ type HealthCheck struct {
 }
 
 type Channel struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	BaseURL       string            `json:"base_url"`
-	AuthType      string            `json:"auth_type,omitempty"`
-	APIKey        string            `json:"api_key,omitempty"`
-	CodexAuth     *CodexAuth        `json:"codex_auth,omitempty"`
-	Models        []string          `json:"models,omitempty"`
-	ModelMappings map[string]string `json:"model_mappings,omitempty"`
-	Priority      int               `json:"priority,omitempty"`
-	Group         string            `json:"group,omitempty"`
-	MaxRetries    int               `json:"max_retries,omitempty"`
-	Weight        int               `json:"weight,omitempty"`
-	Price         float64           `json:"price,omitempty"`
-	Enabled       *bool             `json:"enabled,omitempty"`
-	Headers       map[string]string `json:"headers,omitempty"`
-	HealthCheck   *HealthCheck      `json:"health_check,omitempty"`
+	ID              string            `json:"id"`
+	Name            string            `json:"name"`
+	BaseURL         string            `json:"base_url"`
+	AuthType        string            `json:"auth_type,omitempty"`
+	APIKey          string            `json:"api_key,omitempty"`
+	APIKeyPlacement string            `json:"api_key_placement,omitempty"`
+	APIKeyHeader    string            `json:"api_key_header,omitempty"`
+	APIKeyPrefix    string            `json:"api_key_prefix,omitempty"`
+	APIKeyQuery     string            `json:"api_key_query,omitempty"`
+	CodexAuth       *CodexAuth        `json:"codex_auth,omitempty"`
+	Models          []string          `json:"models,omitempty"`
+	ModelMappings   map[string]string `json:"model_mappings,omitempty"`
+	Priority        int               `json:"priority,omitempty"`
+	Group           string            `json:"group,omitempty"`
+	MaxRetries      int               `json:"max_retries,omitempty"`
+	Weight          int               `json:"weight,omitempty"`
+	Price           float64           `json:"price,omitempty"`
+	Enabled         *bool             `json:"enabled,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	HealthCheck     *HealthCheck      `json:"health_check,omitempty"`
 }
 
 type ModelMapping struct {
@@ -192,6 +197,29 @@ func (c *Config) Normalize() {
 		if ch.AuthType == "" {
 			ch.AuthType = ChannelAuthAPIKey
 		}
+		ch.APIKeyPlacement = strings.ToLower(strings.TrimSpace(ch.APIKeyPlacement))
+		ch.APIKeyHeader = strings.TrimSpace(ch.APIKeyHeader)
+		ch.APIKeyPrefix = strings.TrimSpace(ch.APIKeyPrefix)
+		ch.APIKeyQuery = strings.TrimSpace(ch.APIKeyQuery)
+		if ch.AuthType == ChannelAuthAPIKey {
+			if ch.APIKeyPlacement == "" {
+				ch.APIKeyPlacement = APIKeyPlacementBearer
+			}
+			switch ch.APIKeyPlacement {
+			case APIKeyPlacementBearer:
+				if ch.APIKeyPrefix == "" {
+					ch.APIKeyPrefix = "Bearer"
+				}
+			case APIKeyPlacementHeader:
+				if ch.APIKeyHeader == "" {
+					ch.APIKeyHeader = "X-API-Key"
+				}
+			case APIKeyPlacementQuery:
+				if ch.APIKeyQuery == "" {
+					ch.APIKeyQuery = "api_key"
+				}
+			}
+		}
 		if ch.AuthType == ChannelAuthCodex {
 			if strings.TrimSpace(ch.BaseURL) == "" {
 				ch.BaseURL = CodexBaseURL
@@ -303,7 +331,21 @@ func (c *Config) Validate() error {
 			return errors.New("channel " + ch.ID + " needs base_url")
 		}
 		switch ch.AuthType {
-		case "", ChannelAuthAPIKey:
+		case "", ChannelAuthNone:
+		case ChannelAuthAPIKey:
+			switch ch.APIKeyPlacement {
+			case "", APIKeyPlacementBearer, APIKeyPlacementAuthorization:
+			case APIKeyPlacementHeader:
+				if strings.TrimSpace(ch.APIKeyHeader) == "" {
+					return errors.New("channel " + ch.ID + " needs api_key_header")
+				}
+			case APIKeyPlacementQuery:
+				if strings.TrimSpace(ch.APIKeyQuery) == "" {
+					return errors.New("channel " + ch.ID + " needs api_key_query")
+				}
+			default:
+				return errors.New("channel " + ch.ID + " has unsupported api_key_placement: " + ch.APIKeyPlacement)
+			}
 		case ChannelAuthCodex:
 			if ch.CodexAuth == nil || (strings.TrimSpace(ch.CodexAuth.AccessToken) == "" && strings.TrimSpace(ch.CodexAuth.RefreshToken) == "") {
 				return errors.New("channel " + ch.ID + " needs codex access_token or refresh_token")
@@ -331,6 +373,53 @@ func (c *Channel) IsEnabled() bool {
 
 func (c *Channel) IsCodexAuth() bool {
 	return strings.EqualFold(strings.TrimSpace(c.AuthType), ChannelAuthCodex)
+}
+
+func (c *Channel) IsNoAuth() bool {
+	return strings.EqualFold(strings.TrimSpace(c.AuthType), ChannelAuthNone)
+}
+
+// ApplyAPIKeyAuthorization applies the configured API-key transport while
+// preserving the legacy default of "Authorization: Bearer <key>".
+func (c *Channel) ApplyAPIKeyAuthorization(req *http.Request) {
+	if c == nil || req == nil || req.URL == nil || c.IsNoAuth() || c.IsCodexAuth() {
+		return
+	}
+	key := strings.TrimSpace(c.APIKey)
+	if key == "" {
+		return
+	}
+	prefixValue := func() string {
+		prefix := strings.TrimSpace(c.APIKeyPrefix)
+		if prefix == "" {
+			return key
+		}
+		return prefix + " " + key
+	}
+	switch strings.ToLower(strings.TrimSpace(c.APIKeyPlacement)) {
+	case APIKeyPlacementAuthorization:
+		req.Header.Set("Authorization", prefixValue())
+	case APIKeyPlacementHeader:
+		header := strings.TrimSpace(c.APIKeyHeader)
+		if header == "" {
+			header = "X-API-Key"
+		}
+		req.Header.Set(header, prefixValue())
+	case APIKeyPlacementQuery:
+		name := strings.TrimSpace(c.APIKeyQuery)
+		if name == "" {
+			name = "api_key"
+		}
+		query := req.URL.Query()
+		query.Set(name, key)
+		req.URL.RawQuery = query.Encode()
+	default:
+		prefix := strings.TrimSpace(c.APIKeyPrefix)
+		if prefix == "" {
+			prefix = "Bearer"
+		}
+		req.Header.Set("Authorization", prefix+" "+key)
+	}
 }
 
 func (t *Token) IsEnabled() bool {

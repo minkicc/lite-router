@@ -7,7 +7,8 @@ MKSwitch 是一个跨平台的本地 AI 模型路由桌面应用。Codex 或其�
 ## 功能
 
 - 图形化管理渠道、分组、优先级、模型映射和访问 Token
-- 渠道支持 API Key，也支持粘贴 Codex `auth.json` JSON 授权并自动刷新 OAuth Token
+- 渠道支持免授权、Bearer / 自定义 Header / Query API Key，以及 Codex 浏览器 OAuth、`auth.json` / AT、RT 和 PAT
+- Codex OAuth 凭据支持自动轮换与手动刷新，并在渠道状态中展示账号、过期时间和可刷新状态
 - 支持渠道健康检查、失败重试和自动切换
 - 支持将客户端模型名映射为不同渠道的上游模型名
 - 支持 `/v1/chat/completions`、`/v1/responses` 和 `/v1/models`
@@ -54,6 +55,15 @@ macOS 和 Windows 的公开构建默认不包含商业代码签名证书。系�
 4. 将客户端的 Base URL 设置为 `http://127.0.0.1:8787/v1`，并填入访问 Token。
 
 模型映射可以限定到某个渠道，也可以选择「所有」。选择「所有」时，只会匹配可用模型列表中包含该上游模型的渠道。
+
+添加或编辑渠道时可选择以下授权方式：
+
+- **API Key**：可发送为 `Authorization: Bearer`、原始 `Authorization`、自定义请求头或 Query 参数。
+- **无需授权**：适用于本地服务或明确不要求凭据的可信上游。
+- **Codex 浏览器 OAuth**：生成带 PKCE 的授权链接，登录后粘贴 localhost 回调链接。
+- **Codex auth.json / Access Token**：支持完整 JSON 或原始 AT。
+- **Codex Refresh Token**：保存前先兑换并校验，之后自动维护轮换令牌。
+- **Codex PAT**：校验 `at-` Personal Access Token 并读取账号信息；PAT 本身不自动刷新。
 
 ## 本地开发
 
@@ -112,7 +122,7 @@ npm run backend:build -- aarch64-apple-darwin
 %APPDATA%\cc.minki.mkswitch\
 ```
 
-`config.json` 包含渠道 API Key、Codex OAuth 授权和本地访问 Token，`usage.json` 包含本地使用记录。不要将这些文件提交到 Git 仓库或发送给他人。
+`config.json` 包含渠道 API Key、Codex OAuth / PAT 授权和本地访问 Token，`usage.json` 包含本地使用记录。不要将这些文件提交到 Git 仓库或发送给他人。
 
 MKSwitch 默认仅监听 `127.0.0.1`。开启「局域网访问」后，请务必启用 Token 验证，并只在可信网络中使用。MKSwitch 不会主动上传配置或使用记录；代理请求仍会发送到你配置的上游服务。
 

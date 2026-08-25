@@ -11,13 +11,26 @@ import (
 )
 
 const (
+	ChannelAuthNone   = "none"
 	ChannelAuthAPIKey = "api_key"
 	ChannelAuthCodex  = "codex"
 	CodexBaseURL      = "https://chatgpt.com/backend-api/codex"
 	CodexClientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+	APIKeyPlacementBearer        = "bearer"
+	APIKeyPlacementAuthorization = "authorization"
+	APIKeyPlacementHeader        = "header"
+	APIKeyPlacementQuery         = "query"
+
+	CodexAuthModeOAuth               = "oauth"
+	CodexAuthModeAuthJSON            = "auth_json"
+	CodexAuthModeAccessToken         = "access_token"
+	CodexAuthModeRefreshToken        = "refresh_token"
+	CodexAuthModePersonalAccessToken = "personal_access_token"
 )
 
 type CodexAuth struct {
+	AuthMode     string `json:"auth_mode,omitempty"`
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	IDToken      string `json:"id_token,omitempty"`
@@ -41,6 +54,17 @@ func (a *CodexAuth) Normalize() {
 	a.Email = strings.TrimSpace(a.Email)
 	a.ClientID = strings.TrimSpace(a.ClientID)
 	a.ExpiresAt = strings.TrimSpace(a.ExpiresAt)
+	a.AuthMode = normalizeCodexAuthMode(a.AuthMode)
+	if a.AuthMode == "" {
+		switch {
+		case strings.HasPrefix(a.AccessToken, "at-"):
+			a.AuthMode = CodexAuthModePersonalAccessToken
+		default:
+			// Credentials saved before auth_mode existed were imported through
+			// the original auth.json form. Preserve that maintenance path.
+			a.AuthMode = CodexAuthModeAuthJSON
+		}
+	}
 	if a.ClientID == "" {
 		a.ClientID = CodexClientID
 	}
@@ -89,6 +113,11 @@ func ParseCodexAuthJSON(content string) (*CodexAuth, error) {
 		[]string{"updatedAt"},
 	)
 	auth := &CodexAuth{
+		AuthMode: firstString(raw,
+			[]string{"auth_mode"},
+			[]string{"authMode"},
+			[]string{"openai_auth_mode"},
+		),
 		AccessToken: firstString(raw,
 			[]string{"tokens", "access_token"},
 			[]string{"tokens", "accessToken"},
@@ -143,10 +172,50 @@ func ParseCodexAuthJSON(content string) (*CodexAuth, error) {
 		auth.UpdatedAt = time.Now().UnixMilli()
 	}
 	auth.Normalize()
+	if auth.AuthMode == CodexAuthModeOAuth || auth.AuthMode == CodexAuthModeAccessToken {
+		auth.AuthMode = CodexAuthModeAuthJSON
+	}
 	if auth.AccessToken == "" && auth.RefreshToken == "" {
 		return nil, errors.New("Codex auth.json is missing access_token and refresh_token")
 	}
 	return auth, nil
+}
+
+// ParseCodexAuthInput accepts either a Codex auth.json object or a raw access
+// token. Raw refresh tokens are intentionally handled by the refresh endpoint
+// so they can be validated and exchanged before storage.
+func ParseCodexAuthInput(content string) (*CodexAuth, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, errors.New("Codex authorization cannot be empty")
+	}
+	if strings.HasPrefix(content, "{") {
+		return ParseCodexAuthJSON(content)
+	}
+	auth := &CodexAuth{
+		AccessToken: content,
+		AuthMode:    CodexAuthModeAccessToken,
+		UpdatedAt:   time.Now().UnixMilli(),
+	}
+	auth.Normalize()
+	return auth, nil
+}
+
+func normalizeCodexAuthMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "oauth":
+		return CodexAuthModeOAuth
+	case "authjson", "auth_json", "codex_session":
+		return CodexAuthModeAuthJSON
+	case "accesstoken", "access_token":
+		return CodexAuthModeAccessToken
+	case "refreshtoken", "refresh_token":
+		return CodexAuthModeRefreshToken
+	case "personalaccesstoken", "personal_access_token", "codex_pat":
+		return CodexAuthModePersonalAccessToken
+	default:
+		return ""
+	}
 }
 
 type codexJWTClaims struct {

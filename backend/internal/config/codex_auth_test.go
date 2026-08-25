@@ -74,6 +74,46 @@ func TestParseCodexAuthJSONRejectsMissingTokens(t *testing.T) {
 	}
 }
 
+func TestParseCodexAuthInputAcceptsRawAccessToken(t *testing.T) {
+	token := testCodexJWT(t, map[string]any{
+		"sub":   "user-raw",
+		"email": "raw@example.com",
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-raw",
+		},
+	})
+	auth, err := ParseCodexAuthInput(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.AccessToken != token || auth.AuthMode != CodexAuthModeAccessToken {
+		t.Fatalf("raw auth = %+v", auth)
+	}
+	if auth.AccountID != "account-raw" || auth.Email != "raw@example.com" {
+		t.Fatalf("raw JWT claims not enriched: %+v", auth)
+	}
+}
+
+func TestCodexPersonalAccessTokenModeIsInferred(t *testing.T) {
+	auth := &CodexAuth{AccessToken: "at-personal"}
+	auth.Normalize()
+	if auth.AuthMode != CodexAuthModePersonalAccessToken {
+		t.Fatalf("auth mode = %q", auth.AuthMode)
+	}
+}
+
+func TestLegacyCodexCredentialsRemainAuthJSONMode(t *testing.T) {
+	auth := &CodexAuth{
+		AccessToken:  "legacy-access",
+		RefreshToken: "legacy-refresh",
+	}
+	auth.Normalize()
+	if auth.AuthMode != CodexAuthModeAuthJSON {
+		t.Fatalf("auth mode = %q", auth.AuthMode)
+	}
+}
+
 func testCodexJWT(t *testing.T, claims map[string]any) string {
 	t.Helper()
 	header, err := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
