@@ -73,7 +73,7 @@ fn spawn_router(app: &AppHandle) -> Result<CommandChild, String> {
 
     let backend_command = app
         .shell()
-        .sidecar("mkrouter-core")
+        .sidecar("mkrouter-backend")
         .map_err(|e| e.to_string())?;
 
     let (mut rx, child) = backend_command

@@ -16,7 +16,7 @@ $releaseDir = if (Test-Path -LiteralPath (Join-Path $targetRelease "mkrouter-des
 }
 
 $desktopExe = Join-Path $releaseDir "mkrouter-desktop.exe"
-$backendExe = Join-Path $root "src-tauri\binaries\mkrouter-core-$TargetTriple.exe"
+$backendExe = Join-Path $root "src-tauri\binaries\mkrouter-backend-$TargetTriple.exe"
 if (-not (Test-Path -LiteralPath $desktopExe)) {
     throw "Desktop executable not found: $desktopExe"
 }
@@ -33,7 +33,7 @@ $stageDir = Join-Path $stageRoot "MKRouter"
 try {
     New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
     Copy-Item -LiteralPath $desktopExe -Destination (Join-Path $stageDir "MKRouter.exe")
-    Copy-Item -LiteralPath $backendExe -Destination (Join-Path $stageDir "mkrouter-core.exe")
+    Copy-Item -LiteralPath $backendExe -Destination (Join-Path $stageDir "mkrouter-backend.exe")
     Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination (Join-Path $stageDir "LICENSE.txt")
 
     @"

@@ -36,7 +36,7 @@ if (selectedTargets.length === 0) {
 }
 
 for (const target of selectedTargets) {
-  const name = `mkrouter-core-${target.triple}${target.ext}`;
+  const name = `mkrouter-backend-${target.triple}${target.ext}`;
   const out = join(distDir, name);
   console.log(`building ${name}`);
   const result = spawnSync(
