@@ -391,6 +391,9 @@ pub fn run() {
             locale: Mutex::new("zh-CN".to_string()),
         })
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_title(&format!("MKSwitch v{}", app.package_info().version))?;
+            }
             let handle = app.handle().clone();
             if !acquire_single_instance(&handle) {
                 handle.exit(0);
