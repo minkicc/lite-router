@@ -16,18 +16,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/minkicc/mkswitch/backend/internal/config"
-	"github.com/minkicc/mkswitch/backend/internal/engine"
-	"github.com/minkicc/mkswitch/backend/internal/server"
+	"github.com/minkicc/mkrouter/backend/internal/config"
+	"github.com/minkicc/mkrouter/backend/internal/engine"
+	"github.com/minkicc/mkrouter/backend/internal/server"
 )
 
 //go:embed web/*
 var webFS embed.FS
 
 func main() {
-	cfgPath := flag.String("config", os.Getenv("MKSWITCH_CONFIG_PATH"), "path to config.json")
-	noBrowser := flag.Bool("no-browser", os.Getenv("MKSWITCH_NO_BROWSER") == "1", "do not open the admin page in a browser")
-	listenAddr := flag.String("listen", os.Getenv("MKSWITCH_LISTEN_ADDR"), "override listen address")
+	cfgPath := flag.String("config", firstEnv("MKROUTER_CONFIG_PATH", "MKSWITCH_CONFIG_PATH"), "path to config.json")
+	noBrowser := flag.Bool("no-browser", envEnabled("MKROUTER_NO_BROWSER", "MKSWITCH_NO_BROWSER"), "do not open the admin page in a browser")
+	listenAddr := flag.String("listen", firstEnv("MKROUTER_LISTEN_ADDR", "MKSWITCH_LISTEN_ADDR"), "override listen address")
 	flag.Parse()
 
 	if strings.TrimSpace(*cfgPath) == "" {
@@ -72,7 +72,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("mkswitch listening on http://%s", bindAddr)
+		log.Printf("mkrouter listening on http://%s", bindAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}
@@ -90,6 +90,24 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func envEnabled(names ...string) bool {
+	for _, name := range names {
+		if os.Getenv(name) == "1" {
+			return true
+		}
+	}
+	return false
 }
 
 func displayAddr(addr string) string {

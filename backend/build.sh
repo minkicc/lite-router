@@ -12,7 +12,7 @@ build() {
   local triple="$3"
   local ext=""
   [[ "$goos" == "windows" ]] && ext=".exe"
-  local name="mkswitch-${triple}${ext}"
+  local name="mkrouter-${triple}${ext}"
   echo "building $name"
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
     go build -trimpath -ldflags "-s -w" -o "$DIST/$name" .

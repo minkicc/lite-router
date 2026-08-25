@@ -1,8 +1,8 @@
-# MKSwitch
+# MKRouter
 
 English | [简体中文](README.zh-CN.md)
 
-MKSwitch is a cross-platform desktop application for routing local AI model requests. Codex and other OpenAI-compatible clients connect to one stable local endpoint while MKSwitch selects an upstream channel based on groups, priorities, model mappings, and channel health. Failed requests can be retried or routed to another available channel automatically.
+MKRouter is a cross-platform desktop application for routing local AI model requests. Codex and other OpenAI-compatible clients connect to one stable local endpoint while MKRouter selects an upstream channel based on groups, priorities, model mappings, and channel health. Failed requests can be retried or routed to another available channel automatically.
 
 ## Features
 
@@ -27,7 +27,7 @@ Codex / OpenAI-compatible client
     http://127.0.0.1:8787/v1
               |
               v
-         MKSwitch
+         MKRouter
        /      |       \
   Channel A Channel B Channel C
 ```
@@ -36,10 +36,10 @@ Tauri provides the desktop interface and process management. The Go backend prov
 
 ## Installation
 
-Download the package for your platform from GitHub Releases:
+Download the package for your platform from [GitHub Releases](https://github.com/minkicc/mkrouter/releases):
 
 - Windows: `.exe` or `.msi`
-- Windows portable edition: extract `portable.zip` and run `MKSwitch.exe`
+- Windows portable edition: extract `portable.zip` and run `MKRouter.exe`
 - macOS: `.dmg`
 - Linux: `.AppImage`, `.deb`, or `.rpm`
 
@@ -49,7 +49,7 @@ The Windows portable edition does not require installation, but unsigned executa
 
 ## Quick Start
 
-1. Open MKSwitch and add at least one upstream channel on the **Channels** tab.
+1. Open MKRouter and add at least one upstream channel on the **Channels** tab.
 2. Configure group priorities, channel priorities, and model mappings as needed.
 3. Copy the Base URL from the **Connect** tab. Generate an access token unless **No Token Required** is enabled.
 4. Set the client Base URL to `http://127.0.0.1:8787/v1` and provide the generated access token.
@@ -116,15 +116,17 @@ Supported targets:
 
 ## Data and Security
 
-Desktop application data is stored in the system application configuration directory under the identifier `cc.minki.mkswitch`. On Windows, it is usually located at:
+Desktop application data is stored in the system application configuration directory under the identifier `cc.minki.router`. On Windows, it is usually located at:
 
 ```text
-%APPDATA%\cc.minki.mkswitch\
+%APPDATA%\cc.minki.router\
 ```
 
 `config.json` contains upstream API keys, Codex OAuth/PAT authorization, and local access tokens. `usage.json` contains local usage records. Do not commit or share these files.
 
-MKSwitch listens on `127.0.0.1` by default. When LAN access is enabled, keep token authentication enabled and only use the application on trusted networks. MKSwitch does not upload configuration or usage records by itself; proxied requests are still sent to the upstream services you configure.
+MKRouter automatically migrates `config.json` and `usage.json` from the previous `cc.minki.mkswitch` application directory when upgrading.
+
+MKRouter listens on `127.0.0.1` by default. When LAN access is enabled, keep token authentication enabled and only use the application on trusted networks. MKRouter does not upload configuration or usage records by itself; proxied requests are still sent to the upstream services you configure.
 
 ## Automated Builds
 

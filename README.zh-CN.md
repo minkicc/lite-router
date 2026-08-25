@@ -1,8 +1,8 @@
-# MKSwitch
+# MKRouter
 
 [English](README.md) | 简体中文
 
-MKSwitch 是一个跨平台的本地 AI 模型路由桌面应用。Codex 或其他 OpenAI 兼容客户端只需连接一个固定的本地地址，MKSwitch 会根据分组、优先级、模型映射和渠道健康状态选择上游渠道，并在请求失败时自动重试或切换渠道。
+MKRouter 是一个跨平台的本地 AI 模型路由桌面应用。Codex 或其他 OpenAI 兼容客户端只需连接一个固定的本地地址，MKRouter 会根据分组、优先级、模型映射和渠道健康状态选择上游渠道，并在请求失败时自动重试或切换渠道。
 
 ## 功能
 
@@ -27,7 +27,7 @@ Codex / OpenAI-compatible client
     http://127.0.0.1:8787/v1
               |
               v
-         MKSwitch
+         MKRouter
        /      |       \
   Channel A Channel B Channel C
 ```
@@ -36,10 +36,10 @@ Tauri 提供桌面界面和进程管理，Go 后端提供 OpenAI 兼容代理、
 
 ## 安装
 
-从 GitHub Releases 下载对应平台的安装包：
+从 [GitHub Releases](https://github.com/minkicc/mkrouter/releases) 下载对应平台的安装包：
 
 - Windows：`.exe` 或 `.msi`
-- Windows 绿色版：`portable.zip`，解压后运行 `MKSwitch.exe`
+- Windows 绿色版：`portable.zip`，解压后运行 `MKRouter.exe`
 - macOS：`.dmg`
 - Linux：`.AppImage`、`.deb` 或 `.rpm`
 
@@ -49,7 +49,7 @@ macOS 和 Windows 的公开构建默认不包含商业代码签名证书。系�
 
 ## 快速使用
 
-1. 打开 MKSwitch，在「渠道」页添加至少一个上游渠道。
+1. 打开 MKRouter，在「渠道」页添加至少一个上游渠道。
 2. 按需配置分组优先级、渠道优先级和模型映射。
 3. 在「接入」页复制 Base URL；若未开启「无需 Token」，请生成一个访问 Token。
 4. 将客户端的 Base URL 设置为 `http://127.0.0.1:8787/v1`，并填入访问 Token。
@@ -116,15 +116,17 @@ npm run backend:build -- aarch64-apple-darwin
 
 ## 数据与安全
 
-桌面应用的数据保存在系统应用配置目录中。应用标识为 `cc.minki.mkswitch`；Windows 下通常位于：
+桌面应用的数据保存在系统应用配置目录中。应用标识为 `cc.minki.router`；Windows 下通常位于：
 
 ```text
-%APPDATA%\cc.minki.mkswitch\
+%APPDATA%\cc.minki.router\
 ```
 
 `config.json` 包含渠道 API Key、Codex OAuth / PAT 授权和本地访问 Token，`usage.json` 包含本地使用记录。不要将这些文件提交到 Git 仓库或发送给他人。
 
-MKSwitch 默认仅监听 `127.0.0.1`。开启「局域网访问」后，请务必启用 Token 验证，并只在可信网络中使用。MKSwitch 不会主动上传配置或使用记录；代理请求仍会发送到你配置的上游服务。
+从旧版本升级时，MKRouter 会自动从原来的 `cc.minki.mkswitch` 应用目录迁移 `config.json` 和 `usage.json`。
+
+MKRouter 默认仅监听 `127.0.0.1`。开启「局域网访问」后，请务必启用 Token 验证，并只在可信网络中使用。MKRouter 不会主动上传配置或使用记录；代理请求仍会发送到你配置的上游服务。
 
 ## 自动构建
 

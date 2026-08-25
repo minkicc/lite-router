@@ -1,6 +1,6 @@
-# MKSwitch Backend
+# MKRouter Backend
 
-MKSwitch 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康检查和本地使用记录。
+MKRouter 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康检查和本地使用记录。
 
 ## 接口
 
@@ -30,6 +30,8 @@ MKSwitch 的 Go 核心进程，负责 OpenAI 兼容代理、路由、健康检�
 
 ## 环境变量
 
-- `MKSWITCH_CONFIG_PATH`：配置文件路径
-- `MKSWITCH_NO_BROWSER`：设为 `1` 时不自动打开管理页
-- `MKSWITCH_LISTEN_ADDR`：覆盖监听地址
+- `MKROUTER_CONFIG_PATH`：配置文件路径
+- `MKROUTER_NO_BROWSER`：设为 `1` 时不自动打开管理页
+- `MKROUTER_LISTEN_ADDR`：覆盖监听地址
+
+旧的 `MKSWITCH_*` 变量在 v1.1.2 中仍可作为兼容别名使用。

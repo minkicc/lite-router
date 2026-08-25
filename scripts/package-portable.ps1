@@ -9,14 +9,14 @@ $package = Get-Content -Raw (Join-Path $root "package.json") | ConvertFrom-Json
 $targetRoot = Join-Path $root "src-tauri\target"
 $targetRelease = Join-Path $targetRoot "$TargetTriple\release"
 $localRelease = Join-Path $targetRoot "release"
-$releaseDir = if (Test-Path -LiteralPath (Join-Path $targetRelease "mkswitch-desktop.exe")) {
+$releaseDir = if (Test-Path -LiteralPath (Join-Path $targetRelease "mkrouter-desktop.exe")) {
     $targetRelease
 } else {
     $localRelease
 }
 
-$desktopExe = Join-Path $releaseDir "mkswitch-desktop.exe"
-$backendExe = Join-Path $root "src-tauri\binaries\mkswitch-$TargetTriple.exe"
+$desktopExe = Join-Path $releaseDir "mkrouter-desktop.exe"
+$backendExe = Join-Path $root "src-tauri\binaries\mkrouter-$TargetTriple.exe"
 if (-not (Test-Path -LiteralPath $desktopExe)) {
     throw "Desktop executable not found: $desktopExe"
 }
@@ -26,24 +26,24 @@ if (-not (Test-Path -LiteralPath $backendExe)) {
 
 $bundleDir = Join-Path $releaseDir "bundle\portable"
 New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
-$zipPath = Join-Path $bundleDir "MKSwitch_$($package.version)_windows_x64_portable.zip"
-$stageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mkswitch-portable-" + [guid]::NewGuid().ToString("N"))
-$stageDir = Join-Path $stageRoot "MKSwitch"
+$zipPath = Join-Path $bundleDir "MKRouter_$($package.version)_windows_x64_portable.zip"
+$stageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mkrouter-portable-" + [guid]::NewGuid().ToString("N"))
+$stageDir = Join-Path $stageRoot "MKRouter"
 
 try {
     New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
-    Copy-Item -LiteralPath $desktopExe -Destination (Join-Path $stageDir "MKSwitch.exe")
-    Copy-Item -LiteralPath $backendExe -Destination (Join-Path $stageDir "mkswitch.exe")
+    Copy-Item -LiteralPath $desktopExe -Destination (Join-Path $stageDir "MKRouter.exe")
+    Copy-Item -LiteralPath $backendExe -Destination (Join-Path $stageDir "mkrouter.exe")
     Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination (Join-Path $stageDir "LICENSE.txt")
 
     @"
-MKSwitch portable edition
+MKRouter portable edition
 
-Run "MKSwitch.exe" to start.
+Run "MKRouter.exe" to start.
 
 Configuration and usage records are stored in the system application data
 directory, the same as the installed edition. Removing this folder does not
-delete your MKSwitch configuration.
+delete your MKRouter configuration.
 
 Unsigned open-source builds may show a Microsoft Defender SmartScreen warning.
 Verify the SHA256 checksum published with the release before running the app.

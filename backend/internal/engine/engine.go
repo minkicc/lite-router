@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/minkicc/mkswitch/backend/internal/config"
-	"github.com/minkicc/mkswitch/backend/internal/routing"
+	"github.com/minkicc/mkrouter/backend/internal/config"
+	"github.com/minkicc/mkrouter/backend/internal/routing"
 )
 
 type HealthStatus string

@@ -9,7 +9,8 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
-const LEGACY_APP_IDENTIFIER: &str = "cc.minki.literouter";
+const LEGACY_APP_IDENTIFIERS: [&str; 2] =
+    ["cc.minki.mkswitch", "cc.minki.literouter"];
 const DATA_FILES: [&str; 2] = ["config.json", "usage.json"];
 const INSTANCE_ADDR: &str = "127.0.0.1:39127";
 
@@ -37,30 +38,31 @@ fn migrate_legacy_data(new_dir: &std::path::Path) -> Result<(), String> {
     let Some(parent) = new_dir.parent() else {
         return Ok(());
     };
-    let old_dir = parent.join(LEGACY_APP_IDENTIFIER);
-    if !old_dir.is_dir() {
-        return Ok(());
-    }
-
     std::fs::create_dir_all(new_dir).map_err(|e| e.to_string())?;
-    for name in DATA_FILES {
-        let source = old_dir.join(name);
-        let destination = new_dir.join(name);
-        if !source.is_file() || destination.exists() {
+    for identifier in LEGACY_APP_IDENTIFIERS {
+        let old_dir = parent.join(identifier);
+        if !old_dir.is_dir() {
             continue;
         }
-        if std::fs::rename(&source, &destination).is_err() {
-            std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
-            std::fs::remove_file(&source).map_err(|e| e.to_string())?;
+        for name in DATA_FILES {
+            let source = old_dir.join(name);
+            let destination = new_dir.join(name);
+            if !source.is_file() || destination.exists() {
+                continue;
+            }
+            if std::fs::rename(&source, &destination).is_err() {
+                std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
+                std::fs::remove_file(&source).map_err(|e| e.to_string())?;
+            }
         }
-    }
 
-    if std::fs::read_dir(&old_dir)
-        .map_err(|e| e.to_string())?
-        .next()
-        .is_none()
-    {
-        std::fs::remove_dir(old_dir).map_err(|e| e.to_string())?;
+        if std::fs::read_dir(&old_dir)
+            .map_err(|e| e.to_string())?
+            .next()
+            .is_none()
+        {
+            std::fs::remove_dir(old_dir).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -71,7 +73,7 @@ fn spawn_router(app: &AppHandle) -> Result<CommandChild, String> {
 
     let backend_command = app
         .shell()
-        .sidecar("mkswitch")
+        .sidecar("mkrouter")
         .map_err(|e| e.to_string())?;
 
     let (mut rx, child) = backend_command
@@ -314,7 +316,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         .replace(quit_item.clone());
     let handle = app.clone();
     let mut tray = TrayIconBuilder::new()
-        .tooltip("MKSwitch")
+        .tooltip("MKRouter")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -392,7 +394,7 @@ pub fn run() {
         })
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
-                window.set_title(&format!("MKSwitch v{}", app.package_info().version))?;
+                window.set_title(&format!("MKRouter v{}", app.package_info().version))?;
             }
             let handle = app.handle().clone();
             if !acquire_single_instance(&handle) {
@@ -449,18 +451,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("mkswitch-migration-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!("mkrouter-migration-{}-{nonce}", std::process::id()))
     }
 
     #[test]
     fn migrates_legacy_data_without_overwriting_new_files() {
         let root = temp_config_root();
-        let old_dir = root.join(LEGACY_APP_IDENTIFIER);
-        let new_dir = root.join("cc.minki.mkswitch");
+        let old_dir = root.join("cc.minki.mkswitch");
+        let oldest_dir = root.join("cc.minki.literouter");
+        let new_dir = root.join("cc.minki.router");
         std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&oldest_dir).unwrap();
         std::fs::create_dir_all(&new_dir).unwrap();
         std::fs::write(old_dir.join("config.json"), "old config").unwrap();
         std::fs::write(old_dir.join("usage.json"), "old usage").unwrap();
+        std::fs::write(oldest_dir.join("usage.json"), "oldest usage").unwrap();
         std::fs::write(new_dir.join("config.json"), "new config").unwrap();
 
         migrate_legacy_data(&new_dir).unwrap();
@@ -475,6 +480,7 @@ mod tests {
         );
         assert!(old_dir.join("config.json").exists());
         assert!(!old_dir.join("usage.json").exists());
+        assert!(oldest_dir.join("usage.json").exists());
 
         std::fs::remove_dir_all(root).unwrap();
     }

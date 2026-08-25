@@ -23,9 +23,9 @@ import (
 	"time"
 
 	"github.com/minkicc/codex-sync"
-	"github.com/minkicc/mkswitch/backend/internal/config"
-	"github.com/minkicc/mkswitch/backend/internal/engine"
-	"github.com/minkicc/mkswitch/backend/internal/routing"
+	"github.com/minkicc/mkrouter/backend/internal/config"
+	"github.com/minkicc/mkrouter/backend/internal/engine"
+	"github.com/minkicc/mkrouter/backend/internal/routing"
 )
 
 const maxRequestBody = 64 << 20
@@ -185,7 +185,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":             "ok",
-		"build":              "1.1.0",
+		"build":              "1.1.2",
 		"channels":           len(states),
 		"unhealthy_channels": unhealthy,
 	})
@@ -204,7 +204,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			"id":       model,
 			"object":   "model",
 			"created":  now,
-			"owned_by": "mkswitch",
+			"owned_by": "mkrouter",
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

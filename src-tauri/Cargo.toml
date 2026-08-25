@@ -1,9 +1,10 @@
 [package]
-name = "mkswitch-desktop"
-version = "1.1.1"
+name = "mkrouter-desktop"
+version = "1.1.2"
 description = "A local OpenAI-compatible routing proxy with a cross-platform desktop UI"
-authors = ["MKSwitch contributors"]
+authors = ["MKRouter contributors"]
 license = "MIT"
+repository = "https://github.com/minkicc/mkrouter"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -12,7 +13,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "mkswitch_lib"
+name = "mkrouter_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

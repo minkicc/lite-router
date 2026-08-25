@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MKSwitch",
-  "version": "1.1.1",
-  "identifier": "cc.minki.mkswitch",
+  "productName": "MKRouter",
+  "version": "1.1.2",
+  "identifier": "cc.minki.router",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "MKSwitch",
+        "title": "MKRouter",
         "width": 1120,
         "height": 780,
         "minWidth": 880,
@@ -33,7 +33,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/mkswitch"
+      "binaries/mkrouter"
     ],
     "windows": {
       "nsis": {

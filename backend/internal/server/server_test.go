@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/minkicc/mkswitch/backend/internal/config"
-	"github.com/minkicc/mkswitch/backend/internal/engine"
+	"github.com/minkicc/mkrouter/backend/internal/config"
+	"github.com/minkicc/mkrouter/backend/internal/engine"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

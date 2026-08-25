@@ -1845,8 +1845,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "mkswitch-desktop"
-version = "1.1.1"
+name = "mkrouter-desktop"
+version = "1.1.2"
 dependencies = [
  "serde",
  "serde_json",

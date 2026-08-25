@@ -10,7 +10,7 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "binaries/mkswitch",
+          "name": "binaries/mkrouter",
           "sidecar": true,
           "args": true
         }

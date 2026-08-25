@@ -1,4 +1,4 @@
-module github.com/minkicc/mkswitch/backend
+module github.com/minkicc/mkrouter/backend
 
 go 1.23
 
