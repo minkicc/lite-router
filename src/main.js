@@ -149,11 +149,10 @@ function channelRowHtml(entry, stateMap) {
   const models = (ch.models || []).map(esc).join(", ");
   const latency = formatLatency(st.response_time_ms);
   const enabled = ch.enabled !== false;
-  const authState = channelAuthStateLabel(st);
   return `
     <tr>
       <td class="channel-status-cell">${channelStatusHtml(st, label)}</td>
-      <td>${esc(ch.name || ch.id)}<div class="sub">${esc(ch.id || "")} · ${esc(channelAuthLabel(ch))}${authState ? ` · ${esc(authState)}` : ""}</div></td>
+      <td>${esc(ch.name || ch.id)}<div class="sub">${esc(ch.id || "")}</div></td>
       <td class="mono">${esc(ch.base_url)}</td>
       <td>${ch.priority ?? 0}</td>
       <td>${esc(ch.group || "default")}</td>
@@ -802,31 +801,6 @@ function channelAuthMethod(ch) {
     default:
       return "codex_json";
   }
-}
-
-function channelAuthLabel(ch) {
-  const key = {
-    none: "channels.authNoneShort",
-    api_key: "channels.authApiKeyShort",
-    codex_oauth: "channels.authCodexOAuthShort",
-    codex_json: "channels.authCodexShort",
-    codex_refresh_token: "channels.authCodexRTShort",
-    codex_pat: "channels.authCodexPATShort",
-  }[channelAuthMethod(ch)] || "channels.authApiKeyShort";
-  return t(key);
-}
-
-function channelAuthStateLabel(state) {
-  const key = {
-    active: "channels.authStatusActive",
-    configured: "channels.authStatusConfigured",
-    expiring: "channels.authStatusExpiring",
-    expired: "channels.authStatusExpired",
-    missing: "channels.authStatusMissing",
-    refresh_required: "channels.authStatusRefreshRequired",
-    not_required: "channels.authStatusNotRequired",
-  }[state?.auth_status];
-  return key ? t(key) : "";
 }
 
 function formatAuthExpiry(value) {
