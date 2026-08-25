@@ -2,19 +2,37 @@
 
 English | [简体中文](README.zh-CN.md)
 
-MKRouter is a cross-platform desktop application for routing local AI model requests. Codex and other OpenAI-compatible clients connect to one stable local endpoint while MKRouter selects an upstream channel based on groups, priorities, model mappings, and channel health. Failed requests can be retried or routed to another available channel automatically.
+MKRouter is a cross-platform desktop application for intelligently routing local AI model requests across multiple upstream channels. Codex and other OpenAI-compatible clients connect to one stable local endpoint while MKRouter balances cost, reliability, model availability, priorities, and failover behavior. Failed requests can be retried or routed to another available channel automatically.
+
+### The problem MKRouter solves
+
+Many AI users have several channels or accounts for the same model, but each one has a different price, stability profile, model catalog, and remaining token allowance. MKRouter turns those channels into one manageable pool:
+
+- Prefer a lower-cost healthy channel for routine requests.
+- Keep more reliable channels available as fallbacks for production or long-running tasks.
+- Separate channels into groups such as low-cost, premium, and emergency.
+- Map one client model name to the best upstream model available on each channel.
+- Recover automatically when a channel returns an error, times out, or becomes unhealthy.
+
+The result is one endpoint for clients, with a routing policy that can reduce avoidable spend without sacrificing resilience.
+
+### A small-team AI relay on your LAN
+
+Enable LAN access and let a small team share one self-hosted AI relay on a trusted network. Teammates keep using the same OpenAI-compatible Base URL while MKRouter centralizes upstream credentials, routing rules, health checks, and local usage records. Create separate local access tokens for different people or tools, and keep token authentication enabled whenever LAN access is turned on.
 
 ## Features
 
 - Graphical management for channels, groups, priorities, model mappings, and access tokens
 - Channels support no auth, Bearer/custom-header/query API keys, and Codex browser OAuth, `auth.json` / AT, RT, and PAT credentials
 - Codex OAuth credentials support automatic rotation and manual refresh, with account and expiry status shown in channel management
-- Channel health checks, retries, and automatic failover
+- Cost-aware channel ordering with configurable price, priority, groups, and weights
+- Channel health checks, retries, cooldowns, and automatic failover
+- Independent channel entries for accounts or tokens with different quotas and limits
 - Client model names can be mapped to different upstream model names
 - OpenAI-compatible `/v1/chat/completions`, `/v1/responses`, and `/v1/models` endpoints
 - Multiple local access tokens with persistent request and token usage counters
 - Local usage history with a default limit of 500 records
-- Optional access from other devices on the local network
+- Optional LAN access for a small, self-hosted team relay
 - Simplified Chinese and English interface
 - Windows, macOS, and Linux support
 
@@ -34,6 +52,17 @@ Codex / OpenAI-compatible client
 
 Tauri provides the desktop interface and process management. The Go backend provides the OpenAI-compatible proxy, routing, health checks, and local usage history.
 
+## Typical routing policy
+
+```text
+Routine requests  -> low-cost + healthy channels
+Heavy workloads   -> channels with higher remaining allowance
+Critical requests -> premium/reliable group
+Any failure       -> retry, cooldown, then fail over
+```
+
+MKRouter does not require clients to know which provider or account is active. Add each credential or endpoint as a channel, then express the policy with price, priority, groups, model mappings, and health checks.
+
 ## Installation
 
 Download the package for your platform from [GitHub Releases](https://github.com/minkicc/mkrouter/releases):
@@ -49,8 +78,8 @@ The Windows portable edition does not require installation, but unsigned executa
 
 ## Quick Start
 
-1. Open MKRouter and add at least one upstream channel on the **Channels** tab.
-2. Configure group priorities, channel priorities, and model mappings as needed.
+1. Open MKRouter and add your upstream channels on the **Channels** tab.
+2. Enter each channel's model list, price, group, and priority. Use separate entries when accounts or tokens have different limits.
 3. Copy the Base URL from the **Connect** tab. Generate an access token unless **No Token Required** is enabled.
 4. Set the client Base URL to `http://127.0.0.1:8787/v1` and provide the generated access token.
 
