@@ -218,6 +218,10 @@ function channelStatusHtml(st, label) {
 }
 
 function renderChannels() {
+  // Keep an open action menu stable while the periodic refresh updates data.
+  // Replacing the table HTML would remove the popover and close it.
+  if (document.querySelector("[data-channel-menu]:popover-open")) return;
+
   const stateMap = {};
   (channelsState || []).forEach((c) => {
     stateMap[c.id] = c;
@@ -344,6 +348,8 @@ function portOf(url) {
 }
 
 function renderTokens() {
+  if (document.querySelector("[data-token-menu]:popover-open")) return;
+
   const rows = (tokens || [])
     .map((token) => {
       const enabled = token.enabled !== false;
@@ -832,6 +838,8 @@ function channelFormHtml(ch) {
   const codexAuthInput = ch.codex_auth_input ?? codexAuthJSON(ch.codex_auth);
   const baseURL = ch.base_url || (isCodex ? "https://chatgpt.com/backend-api/codex" : "");
   const placement = ch.api_key_placement || "bearer";
+  const showAPIKeyAdvanced = placement !== "bearer"
+    || (ch.api_key_prefix != null && ch.api_key_prefix !== "Bearer");
   const oauthURL = ch.codex_oauth_url || "";
   return `
     <div class="form-section">
@@ -850,20 +858,28 @@ function channelFormHtml(ch) {
       <label>Base URL *<input name="base_url" value="${esc(baseURL)}" placeholder="https://api.deepseek.com"></label>
       <div data-auth-panel="api_key" ${authMethod === "api_key" ? "" : "hidden"}>
         <label>API Key<input name="api_key" value="${esc(ch.api_key || "")}" placeholder="sk-..."></label>
-        <div class="grid">
-          <label>${esc(t("channels.apiKeyPlacement"))}
-            <select name="api_key_placement">
-              <option value="bearer" ${placement === "bearer" ? "selected" : ""}>${esc(t("channels.apiKeyBearer"))}</option>
-              <option value="authorization" ${placement === "authorization" ? "selected" : ""}>${esc(t("channels.apiKeyAuthorization"))}</option>
-              <option value="header" ${placement === "header" ? "selected" : ""}>${esc(t("channels.apiKeyHeader"))}</option>
-              <option value="query" ${placement === "query" ? "selected" : ""}>${esc(t("channels.apiKeyQuery"))}</option>
-            </select>
-          </label>
-          <label data-api-key-field="prefix">${esc(t("channels.apiKeyPrefix"))}<input name="api_key_prefix" value="${esc(ch.api_key_prefix ?? (placement === "bearer" ? "Bearer" : ""))}" placeholder="Bearer"></label>
-          <label data-api-key-field="header">${esc(t("channels.apiKeyHeaderName"))}<input name="api_key_header" value="${esc(ch.api_key_header || "X-API-Key")}" placeholder="X-API-Key"></label>
-          <label data-api-key-field="query">${esc(t("channels.apiKeyQueryName"))}<input name="api_key_query" value="${esc(ch.api_key_query || "api_key")}" placeholder="api_key"></label>
-        </div>
-        <small class="field-hint">${esc(t("channels.apiKeyPlacementHint"))}</small>
+        <details class="api-key-advanced" ${showAPIKeyAdvanced ? "open" : ""}>
+          <summary>
+            <span>${esc(t("channels.apiKeyAdvanced"))}</span>
+            <span>${esc(t("channels.apiKeyAdvancedHint"))}</span>
+          </summary>
+          <div class="api-key-advanced-body">
+            <div class="grid">
+              <label>${esc(t("channels.apiKeyPlacement"))}
+                <select name="api_key_placement">
+                  <option value="bearer" ${placement === "bearer" ? "selected" : ""}>${esc(t("channels.apiKeyBearer"))}</option>
+                  <option value="authorization" ${placement === "authorization" ? "selected" : ""}>${esc(t("channels.apiKeyAuthorization"))}</option>
+                  <option value="header" ${placement === "header" ? "selected" : ""}>${esc(t("channels.apiKeyHeader"))}</option>
+                  <option value="query" ${placement === "query" ? "selected" : ""}>${esc(t("channels.apiKeyQuery"))}</option>
+                </select>
+              </label>
+              <label data-api-key-field="prefix">${esc(t("channels.apiKeyPrefix"))}<input name="api_key_prefix" value="${esc(ch.api_key_prefix ?? (placement === "bearer" ? "Bearer" : ""))}" placeholder="Bearer"></label>
+              <label data-api-key-field="header">${esc(t("channels.apiKeyHeaderName"))}<input name="api_key_header" value="${esc(ch.api_key_header || "X-API-Key")}" placeholder="X-API-Key"></label>
+              <label data-api-key-field="query">${esc(t("channels.apiKeyQueryName"))}<input name="api_key_query" value="${esc(ch.api_key_query || "api_key")}" placeholder="api_key"></label>
+            </div>
+            <small class="field-hint">${esc(t("channels.apiKeyPlacementHint"))}</small>
+          </div>
+        </details>
       </div>
       <div data-auth-panel="none" ${authMethod === "none" ? "" : "hidden"}>
         <div class="auth-note">${esc(t("channels.authNoneHint"))}</div>
@@ -1608,6 +1624,9 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelector("#btn-add-token").addEventListener("click", openTokenForm);
   document.querySelector("#btn-add-group").addEventListener("click", addGroup);
   document.querySelector("#tool-codex-sync").addEventListener("click", openCodexTool);
+  document.querySelector("#about-github").addEventListener("click", () => {
+    void openExternal("https://github.com/minkicc/mkrouter");
+  });
   document.querySelector("#btn-codex-sync").addEventListener("click", runCodexSync);
   document.querySelector("#btn-codex-status").addEventListener("click", loadCodex);
   document.querySelector("#btn-codex-prune").addEventListener("click", runCodexPrune);
