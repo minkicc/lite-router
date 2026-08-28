@@ -36,6 +36,20 @@ MKRouter 是一个跨平台的本地 AI 请求智能路由桌面应用。Codex �
 - 支持简体中文和英文
 - 支持 Windows、macOS 和 Linux
 
+## 界面预览
+
+### 渠道管理
+
+![MKRouter 渠道管理](docs/screenshots/channels-zh-CN.png)
+
+### 使用记录
+
+![MKRouter 使用记录](docs/screenshots/usage-zh-CN.png)
+
+### 实用工具
+
+![MKRouter 实用工具](docs/screenshots/utilities-zh-CN.png)
+
 ## 工作方式
 
 ```text

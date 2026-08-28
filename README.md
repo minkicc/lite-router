@@ -36,6 +36,20 @@ Enable LAN access and let a small team share one self-hosted AI relay on a trust
 - Simplified Chinese and English interface
 - Windows, macOS, and Linux support
 
+## Screenshots
+
+### Channel management
+
+![MKRouter channel management](docs/screenshots/channels-en-US.png)
+
+### Usage history
+
+![MKRouter usage history](docs/screenshots/usage-en-US.png)
+
+### Utilities
+
+![MKRouter utilities](docs/screenshots/utilities-en-US.png)
+
 ## How It Works
 
 ```text
